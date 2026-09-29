@@ -112,11 +112,31 @@ variant is signed with the debug keystore that the Android Gradle plugin generat
 Both variants disable cleartext traffic (`android:usesCleartextTraffic="false"` plus a network
 security configuration whose base config forbids cleartext with no domain exceptions), exclude
 all application data from backup and device transfer (`data_extraction_rules.xml` for Android 12+
-and `backup_rules.xml` for older releases), and request no permissions.
-`ManifestContractTest` fails if any of these declarations changes. The merged manifest contains one
-AndroidX-generated signature permission,
-`<applicationId>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION`, which `androidx.core` adds to every app
-targeting API 33 or later; it is not a runtime permission and grants nothing to other apps.
+and `backup_rules.xml` for older releases), and request no permissions in the source manifest.
+`ManifestContractTest` parses the **source** manifest (`app/src/main/AndroidManifest.xml`) and its
+XML resources; it fails if any of these declarations changes, and it asserts that the source
+declares exactly one exported activity and no service, receiver or provider. It does not inspect
+the merged manifest inside the APK.
+
+### Merged manifest per variant
+
+Library manifests merge into the built APK. Verified with
+`aapt2 dump xmltree --file AndroidManifest.xml <apk>` on the scaffold's own builds:
+
+| Component (merged manifest) | Origin | `debug` | `release` | Exported | Guard |
+| --- | --- | --- | --- | --- | --- |
+| `com.pennilogic.android.MainActivity` | source manifest | yes | yes | yes | launcher intent filter only |
+| `androidx.compose.ui.tooling.PreviewActivity` | `debugImplementation(androidx.compose.ui:ui-tooling)` | yes | **no** | yes | debug-only; Android Studio's preview/"run composable" host, no product code path |
+| `androidx.profileinstaller.ProfileInstallReceiver` | `androidx.profileinstaller` (transitive from Compose/Activity) | yes | yes | yes | `android.permission.DUMP` (signature/privileged; only shell/tooling can send) |
+| `androidx.startup.InitializationProvider` | `androidx.startup` (transitive) | yes | yes | **no** | authority `<applicationId>.androidx-startup` |
+| `<applicationId>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` | `androidx.core` (apps targeting API 33+) | yes | yes | n/a | signature permission declared and used by the app itself; not a runtime permission |
+
+`PreviewActivity` is kept in the debug variant on purpose: it is what Android Studio uses to
+run `@Preview` composables on a device, it is absent from release, and stripping it would mean
+editing the build files or adding a manifest override for no security gain in a debug build. If a
+later ticket wants a debug manifest without it, the change is a `tools:node="remove"` entry in a
+`src/debug/AndroidManifest.xml`. Any future component that appears in the merged manifest must be
+added to this table.
 
 ## Continuous integration check identifiers
 

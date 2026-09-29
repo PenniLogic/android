@@ -40,9 +40,18 @@ class BuildConfigContractTest {
             }
 
             is ConfigurationResult.Invalid -> {
+                // Descriptions are KEY:kind only, so naming them here cannot leak a configuration value.
+                val described = result.problems.joinToString { it.description }
                 val kinds = result.problems.map { it.kind }.toSet()
-                assertEquals(setOf(ConfigurationProblem.Kind.MISSING), kinds)
-                assertTrue(result.problems.all { it.key in ConfigurationKeys.required })
+                assertEquals(
+                    "release BuildConfig may only be missing required keys, but reported: $described",
+                    setOf(ConfigurationProblem.Kind.MISSING),
+                    kinds,
+                )
+                assertTrue(
+                    "release BuildConfig reported a problem outside the required keys: $described",
+                    result.problems.all { it.key in ConfigurationKeys.required },
+                )
             }
         }
     }

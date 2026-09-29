@@ -12,6 +12,9 @@ import javax.xml.parsers.DocumentBuilderFactory
 /**
  * Guards the security defaults declared in the manifest and its network security configuration.
  * Any change to these attributes must be deliberate and reviewed, so it has to update this test.
+ *
+ * Scope: the **source** manifest and XML resources only. Library manifests merged into the APK
+ * (documented per variant in SCAFFOLD.md, "Merged manifest per variant") are not inspected here.
  */
 class ManifestContractTest {
     private val manifest: Document by lazy { parse(sourceFile("src/main/AndroidManifest.xml")) }
@@ -64,13 +67,13 @@ class ManifestContractTest {
     }
 
     @Test
-    fun `scaffold declares no permissions`() {
+    fun `source manifest declares no permissions`() {
         assertEquals(0, manifest.getElementsByTagName("uses-permission").length)
         assertEquals(0, manifest.getElementsByTagName("uses-permission-sdk-23").length)
     }
 
     @Test
-    fun `only the entry activity is exported`() {
+    fun `source manifest exports only the entry activity`() {
         val activities = manifest.getElementsByTagName("activity")
         assertEquals(1, activities.length)
         val entry = activities.item(0) as Element
