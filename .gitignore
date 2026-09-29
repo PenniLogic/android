@@ -12,3 +12,13 @@ node_modules/
 coverage/
 .idea/
 .DS_Store
+local.properties
+.kotlin/
+captures/
+.cxx/
+*.apk
+*.aab
+*.jks
+*.keystore
+*.hprof
+app/release/
