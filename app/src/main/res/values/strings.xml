@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PenniLogic</string>
+    <string name="scaffold_subtitle">Scaffold build. No product features are included yet.</string>
+    <string name="label_build">Build</string>
+    <string name="label_environment">Environment</string>
+    <string name="label_build_label">Build label</string>
+    <string name="configuration_loaded">Configuration loaded.</string>
+    <string name="configuration_incomplete">Configuration incomplete: %1$s</string>
+</resources>

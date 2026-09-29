@@ -1,0 +1,37 @@
+# Single source of truth for toolchain, plugin and library versions.
+# Every version is pinned exactly; no dynamic or range versions are allowed here.
+[versions]
+# Android SDK levels and build tools used by the application module.
+android-compileSdk = "36"
+android-targetSdk = "36"
+# Provisional scaffold baseline; the architecture ticket (android#2) confirms or raises it.
+android-minSdk = "26"
+android-buildTools = "36.0.0"
+
+# Build plugins.
+agp = "9.4.1"
+kotlin = "2.4.20"
+spotless = "8.10.3"
+ktlint = "1.8.0"
+
+# AndroidX and Compose.
+# BOM 2026.06.01 = Compose 1.11.4 / Material 3 1.4.0, the newest line whose minCompileSdk (35) fits
+# compileSdk 36. Compose 1.12 (BOM 2026.08.00+) requires compileSdk 37; move both together.
+compose-bom = "2026.06.01"
+activity-compose = "1.13.0"
+
+# Unit testing.
+junit4 = "4.13.2"
+
+[libraries]
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+junit4 = { module = "junit:junit", version.ref = "junit4" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window theme shown before Compose draws; Material 3 theming happens in Compose. -->
+    <style name="Theme.PenniLogic" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
