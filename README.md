@@ -3,7 +3,7 @@
 
 Native Kotlin/Compose Android client.
 
-**Status:** Repository foundation only. No Android build or physical-device acceptance is claimed.
+**Status:** Repository foundation plus the reproducible Gradle/Kotlin scaffold from PenniLogic/android#1 (emulator start is local PR evidence, not CI); no product navigation, storage or permission journeys are implemented and no physical-device acceptance is claimed.
 
 This repository belongs to the new public, Free-plan `PenniLogic` organization.
 `migration-source.json` records the pinned source snapshot and excluded history.
@@ -15,7 +15,16 @@ The old private repositories, unmerged branches and discussions remain in
 ```text
 python scripts/setup.py
 python scripts/check_repository.py
+python scripts/quality_gates.py build
+python scripts/quality_gates.py test
+python scripts/quality_gates.py lint
+python scripts/quality_gates.py coverage
+python scripts/quality_gates.py self-test
+python -m unittest discover -s scripts/tests -p "test_*.py"
 ```
+
+Repository-specific setup, commands and troubleshooting are maintained by hand in
+[SCAFFOLD.md](SCAFFOLD.md); that guide is not generated.
 
 See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 Product specifications and the preserved backlog are in

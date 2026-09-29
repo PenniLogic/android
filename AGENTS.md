@@ -3,7 +3,7 @@
 
 Native Kotlin/Compose Android client.
 
-**Current scope:** Repository foundation only. No Android build or physical-device acceptance is claimed.
+**Current scope:** Repository foundation plus the reproducible Gradle/Kotlin scaffold from PenniLogic/android#1 (emulator start is local PR evidence, not CI); no product navigation, storage or permission journeys are implemented and no physical-device acceptance is claimed.
 
 Read this file, the linked plan item, relevant product decisions and
 `.github/agent-policy.json`. This new public repository has its own delivery
@@ -32,7 +32,16 @@ cannot approve its own PR. Never invent another GitHub reviewer.
 ```text
 python scripts/setup.py
 python scripts/check_repository.py
+python scripts/quality_gates.py build
+python scripts/quality_gates.py test
+python scripts/quality_gates.py lint
+python scripts/quality_gates.py coverage
+python scripts/quality_gates.py self-test
+python -m unittest discover -s scripts/tests -p "test_*.py"
 ```
+
+Repository-specific setup, commands and troubleshooting are maintained by hand in
+[SCAFFOLD.md](SCAFFOLD.md); that guide is not generated.
 
 Install the managed hook with the documented setup command. Preserve a custom
 hook rather than replacing it. Never claim an unrun build, test, accessibility
