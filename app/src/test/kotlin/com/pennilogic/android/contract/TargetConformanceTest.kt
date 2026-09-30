@@ -97,17 +97,22 @@ class TargetConformanceTest {
     }
 
     @Test
-    fun `themes never opt out of edge-to-edge enforcement`() {
-        val themeFiles =
+    fun `no resource opts out of edge-to-edge enforcement`() {
+        val resourceFiles =
             RepositoryFiles.app
                 .resolve("src/main/res")
                 .walkTopDown()
-                .filter { it.isFile && it.parentFile?.name?.startsWith("values") == true && it.name == "themes.xml" }
+                .filter { it.isFile && it.extension == "xml" && it.parentFile?.name?.startsWith("values") == true }
                 .toList()
-        assertTrue("theme resources must exist", themeFiles.isNotEmpty())
-        for (file in themeFiles) {
-            val items = RepositoryFiles.parseXml(file).elements("item").map { it.getAttribute("name") }
+        assertTrue("value resources must exist", resourceFiles.isNotEmpty())
+        for (file in resourceFiles) {
+            val document = RepositoryFiles.parseXml(file)
+            val items = document.elements("item").map { it.getAttribute("name") }
             assertTrue("${file.path} opts out of edge-to-edge", "android:windowOptOutEdgeToEdgeEnforcement" !in items)
+            assertTrue(
+                "${file.path} names the opt-out attribute",
+                !file.readText().contains("windowOptOutEdgeToEdgeEnforcement"),
+            )
         }
     }
 

@@ -2,14 +2,15 @@ package com.pennilogic.android.platform.settings
 
 /**
  * How the running build reached the device, as far as the platform tells the app about itself
- * (`PackageManager.getInstallSourceInfo`). Restricted settings on API 33+ key off this: the platform
- * locks sensitive settings for builds that arrived from a user-acquired file, never for builds that
- * arrived through a store session or `adb`.
+ * (`PackageManager.getInstallSourceInfo`). Restricted settings on API 33+ key off the install: the
+ * platform locks sensitive settings for builds whose installer marked them as file-sourced (and, on
+ * API 35+, for installers the device does not trust), never for builds that arrived through a
+ * trusted store session or `adb` on a device with AOSP defaults.
  */
 enum class InstallSource(
     val id: String,
     val description: String,
-    /** True when API 33+ applies the restricted-settings lock to builds from this source. */
+    /** True when API 33+ applies the restricted-settings lock to builds from this source on an AOSP-default device. */
     val restrictedOnApi33Plus: Boolean,
     /** True when the build was reinstalled by backup-and-restore or device-to-device transfer. */
     val restored: Boolean = false,
@@ -207,16 +208,16 @@ enum class SettingAvailability(
         "Locked by restricted settings; unlock once via App info > Allow restricted settings, then enable normally.",
     ),
 
-    /** Enableable, but backup or transfer did not carry the grant over; the user grants it again. */
+    /** Enableable, but a restore or transfer is not guaranteed to carry the grant over; the app re-checks and asks again. */
     REGRANT_REQUIRED(
         "regrant_required",
-        "Not carried over by restore or transfer; grant again through the normal path.",
+        "Not guaranteed to be carried over by restore or transfer; the app re-checks and asks again through the normal path.",
     ),
 
-    /** Locked by restricted settings and, in addition, not carried over by the restore. */
+    /** Locked by restricted settings and, in addition, not guaranteed to be carried over by the transfer. */
     RESTRICTED_AND_REGRANT_REQUIRED(
         "restricted_and_regrant_required",
-        "Not carried over by the transfer and locked by restricted settings; unlock via App info, then grant again.",
+        "Not guaranteed to be carried over by the transfer and locked by restricted settings; unlock via App info, then grant again.",
     ),
 
     /** The setting does not exist as a user control on this API level. */

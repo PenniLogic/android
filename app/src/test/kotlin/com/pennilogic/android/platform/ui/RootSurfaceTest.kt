@@ -94,6 +94,25 @@ class RootSurfaceTest {
     }
 
     @Test
+    @Config(qualifiers = "w620dp-h700dp")
+    fun `the width class follows the usable width after insets, not the window`() {
+        val compose = checkNotNull(compose)
+        // A 620dp window minus 15dp of inset on each side is a 590dp usable width: compact, not medium.
+        compose.setContent {
+            RootSurface(
+                insets = WindowInsets(left = 15.dp, right = 15.dp),
+            ) { Box(Modifier.fillMaxSize()) }
+        }
+        val expectedContent = WindowWidthClass.contentWidthDp(590)
+        assertEquals(590 - 2 * WindowWidthClass.COMPACT.horizontalMarginDp, expectedContent)
+        compose.onNodeWithTag(RootSurfaceTags.CONTENT).assertWidthIsEqualTo(expectedContent.dp)
+        compose
+            .onNodeWithTag(
+                RootSurfaceTags.CONTENT,
+            ).assertLeftPositionInRootIsEqualTo(15.dp + WindowWidthClass.COMPACT.horizontalMarginDp.dp)
+    }
+
+    @Test
     @Config(qualifiers = "w360dp-h780dp")
     fun `compact windows fill the width inside 16dp margins`() {
         val compose = checkNotNull(compose)

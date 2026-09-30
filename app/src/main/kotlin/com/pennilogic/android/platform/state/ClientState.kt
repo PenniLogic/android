@@ -12,18 +12,19 @@ object ClientStateTaxonomy {
     const val CLIENT: String = "android"
 }
 
-/** The eight published states, by stable identifier. */
+/** The eight published states, by stable identifier, with the scopes the taxonomy allows for each. */
 enum class ClientState(
     val id: String,
+    val applicableScopes: Set<StateScope>,
 ) {
-    EMPTY("empty"),
-    LOADING("loading"),
-    ERROR("error"),
-    OFFLINE("offline"),
-    STALE("stale"),
-    PERMISSION_DENIED("permission_denied"),
-    QUOTA_EXCEEDED("quota_exceeded"),
-    DEGRADED("degraded"),
+    EMPTY("empty", setOf(StateScope.SURFACE, StateScope.REGION)),
+    LOADING("loading", setOf(StateScope.SURFACE, StateScope.REGION, StateScope.ACTION)),
+    ERROR("error", setOf(StateScope.SURFACE, StateScope.REGION, StateScope.ACTION)),
+    OFFLINE("offline", setOf(StateScope.SURFACE, StateScope.REGION, StateScope.ACTION)),
+    STALE("stale", setOf(StateScope.SURFACE, StateScope.REGION)),
+    PERMISSION_DENIED("permission_denied", setOf(StateScope.SURFACE, StateScope.REGION, StateScope.ACTION)),
+    QUOTA_EXCEEDED("quota_exceeded", setOf(StateScope.REGION, StateScope.ACTION)),
+    DEGRADED("degraded", setOf(StateScope.SURFACE)),
     ;
 
     /** The signal recorded when the state is entered and when its recovery action is taken. */
@@ -45,13 +46,18 @@ enum class PermissionDeniedCause(
     ROLE("role"),
 }
 
-/** Where a state is rendered. */
+/** Where a state is rendered. The scopes a given state may use are [ClientState.applicableScopes]. */
 enum class StateScope(
     val id: String,
 ) {
     SURFACE("surface"),
     REGION("region"),
     ACTION("action"),
+    ;
+
+    companion object {
+        fun fromId(id: String): StateScope? = entries.firstOrNull { it.id == id }
+    }
 }
 
 /**
@@ -130,8 +136,10 @@ enum class PlatformCapabilityReason(
 
 /**
  * The taxonomy signal `client_state.<identifier>`, recorded once on entering a state and once more
- * when its recovery action is taken. It carries exactly the published attributes: no amount, no
- * identifier of a denied resource, no other person, no message content and no device identifier.
+ * when its recovery action is taken. It carries exactly the published attributes, each constrained
+ * structurally: the scope is one the taxonomy allows for the state, a cause exists only for
+ * `permission_denied`, and `permission` is a platform permission or role name — never message
+ * content, an amount, an identifier of a denied resource, another person or the device.
  */
 data class ClientStateSignal(
     val state: ClientState,
@@ -143,11 +151,15 @@ data class ClientStateSignal(
     val recoveryActionTaken: Boolean = false,
 ) {
     init {
+        require(scope in state.applicableScopes) { "${state.id} is not rendered at ${scope.id} scope" }
         require(
             cause == null || state == ClientState.PERMISSION_DENIED,
         ) { "cause is only defined for permission_denied" }
         require(permission == null || cause == PermissionDeniedCause.DEVICE) {
             "permission is only defined for the device cause"
+        }
+        require(permission == null || PLATFORM_PERMISSION.matches(permission)) {
+            "permission must be a platform permission or role name"
         }
         require(SURFACE_ID.matches(surfaceId)) { "surface_id must be a snake_case identifier" }
     }
@@ -169,5 +181,8 @@ data class ClientStateSignal(
 
     private companion object {
         val SURFACE_ID = Regex("[a-z][a-z0-9_]*")
+
+        /** `android.permission.RECEIVE_SMS`, `android.app.role.SMS`, ...: the platform's own names only. */
+        val PLATFORM_PERMISSION = Regex("android\\.(permission|app\\.role)\\.[A-Z][A-Z0-9_]*")
     }
 }

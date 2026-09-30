@@ -128,12 +128,28 @@ data class RestrictedSettingsCell(
  * What a Play-installed, sideloaded or restored build can and cannot enable, per sensitive setting
  * and API level, and the supported QA recovery path for each cell.
  *
- * The matrix encodes platform behaviour, not app policy: API 33 introduced restricted settings for
- * the notification listener and accessibility services of builds installed from a user-acquired
- * file; API 35 (Android 15 CDD) extended the lock to device admin, display over other apps, usage
- * access, the SMS runtime permission and the default SMS and phone roles; API 36 keeps that set.
- * Builds installed by Google Play, another store's install session or `adb` are never locked, and
- * no grant of special access is carried over by a restore, so restored builds always re-grant.
+ * The cell values hold for a device with AOSP defaults; the platform rules behind them are:
+ *
+ * - **API 33/34** (`InstallPackageHelper.enableRestrictedSettings`, AOSP 13): the lock is applied at
+ *   install time iff the installer marked the install as file-sourced (`PACKAGE_SOURCE_LOCAL_FILE`
+ *   or `PACKAGE_SOURCE_DOWNLOADED_FILE`); the installer's identity plays no part. It covers the
+ *   notification listener and accessibility services.
+ * - **API 35/36** (`EnhancedConfirmationService.isPackageEcmGuarded`, Permission module, Android 15
+ *   and 16): file-sourced installs are always guarded; otherwise a package is exempt only when the
+ *   device trusts installs from non-allowlisted installers (AOSP ships an empty trusted-installer
+ *   list, so this is the default), or the installer is preinstalled or allowlisted. The decision is
+ *   made lazily when a setting is first toggled. The set grows to device admin, display over other
+ *   apps, usage access, the SMS runtime permission and the default SMS and phone roles.
+ * - **Restored builds**: the platform attempts to restore listener approvals, accessibility settings
+ *   and runtime grants; none is guaranteed, so a restored build treats every grant as one to re-check
+ *   and ask for again.
+ *
+ * The app cannot read the package source of its own install on API 33/34 from a plain classifier
+ * input (`InstallSourceInfo.getPackageSource()` does report it from 33), so `InstallSourceClassifier`
+ * uses two proxies for the legacy path: an installing or initiating package that is a package
+ * installer app, and an install whose installing package is gone while the initiating package is
+ * not the shell. A proxy can claim a lock the platform did not apply; the app's posture is safe either
+ * way, because an unproven lock only changes the destination of the recovery action.
  *
  * `docs/platform/restricted-settings-matrix.md` renders this matrix; `RestrictedSettingsMatrixTest`
  * keeps the document identical to the code and asserts the invariants above.

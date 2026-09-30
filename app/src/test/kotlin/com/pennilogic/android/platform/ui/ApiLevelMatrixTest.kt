@@ -6,7 +6,6 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import com.pennilogic.android.MainActivity
 import com.pennilogic.android.platform.PlatformBaseline
-import com.pennilogic.android.ui.ScaffoldScreenTags
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -26,7 +25,7 @@ class ApiLevelMatrixTest {
     val compose = createAndroidComposeRule<MainActivity>()
 
     @Test
-    fun `scaffold renders inside the root surface on every qa api level`() {
+    fun `scaffold renders inside the root surface on every qa api level with its accessibility contract`() {
         assertTrue(
             "runtime ${Build.VERSION.SDK_INT} is a QA level",
             Build.VERSION.SDK_INT in PlatformBaseline.QA_API_LEVELS,
@@ -34,7 +33,7 @@ class ApiLevelMatrixTest {
         compose.onNodeWithTag(RootSurfaceTags.SURFACE).assertIsDisplayed()
         compose.onNodeWithTag(RootSurfaceTags.INSET_AREA).assertIsDisplayed()
         compose.onNodeWithTag(RootSurfaceTags.CONTENT).assertIsDisplayed()
-        compose.onNodeWithTag(ScaffoldScreenTags.HEADING).assertIsDisplayed()
+        ScaffoldAccessibility.assertContract(compose)
     }
 
     @Test

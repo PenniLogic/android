@@ -43,9 +43,9 @@ and no signing material is added.
 
 | Path | Restricted settings (API 33+) | Developer verification | When to use |
 | --- | --- | --- | --- |
-| `adb install -r app/build/outputs/apk/debug/app-debug.apk` (or `./gradlew installDebug`) | Not applied: the platform records `com.android.shell` as the initiating package and no installing package | Exempt | Default for every QA device and emulator |
+| `adb install -r app/build/outputs/apk/debug/app-debug.apk` (or `./gradlew installDebug`) | Not applied on an AOSP-default device: no file source is declared (the platform records `com.android.shell` as the initiating package, no installing package and package source `OTHER`); on API 35+ a device whose OEM/GMS configuration declares a trusted-installer list may still guard it (see [`restricted-settings-matrix.md`](restricted-settings-matrix.md)) | Exempt | Default for every QA device and emulator |
 | Play internal testing / internal app sharing | Not applied (Play install) | Registered through Play | Release-candidate QA on certified devices, once release signing exists |
-| Copying the APK to the device and opening it from a file manager, browser download or mail | **Applied**: notification access, accessibility and (API 35+) device admin, overlay, usage access, SMS permission and default SMS/phone roles are locked until the user allows restricted settings for the app | Blocked in enforced regions unless the tester completes the advanced flow | Only to reproduce the sideloaded-user experience; see the recovery path below |
+| Copying the APK to the device and opening it from a file manager, browser download or mail | **Applied** when the installer marks the install as file-sourced (the AOSP/Google package installer does): notification access, accessibility and (API 35+) device admin, overlay, usage access, SMS permission and default SMS/phone roles are locked until the user allows restricted settings for the app | Blocked in enforced regions unless the tester completes the advanced flow | Only to reproduce the sideloaded-user experience; see the recovery path below |
 
 The full source × setting × API table is in
 [`restricted-settings-matrix.md`](restricted-settings-matrix.md).
@@ -58,10 +58,15 @@ The full source × setting × API table is in
 3. Enable the setting through its normal page.
 4. Alternative that avoids the lock entirely: `adb install -r` the same APK (data is kept).
 
-Not supported, and not something the app does: `adb shell appops set … ACCESS_RESTRICTED_SETTINGS
-allow`, hidden APIs or reflection, disabling Play Protect, lowering `targetSdk`, or a build variant
-that bypasses the lock. The script reports the current `ACCESS_RESTRICTED_SETTINGS` mode for
-diagnosis and never changes it.
+Not supported, and not something the app does: changing the restricted-settings app-op from a
+shell, hidden APIs or reflection, disabling Play Protect, lowering `targetSdk`, or a build variant
+that bypasses the lock. This document does not spell out the shell command on purpose, and
+`RestrictedSettingsMatrixDocTest` fails if it ever appears here. The script reports the current
+`ACCESS_RESTRICTED_SETTINGS` mode for diagnosis and never changes it; read it as follows: `allow`
+means the user unlocked restricted settings for the app; `errored`, `deny` or `ignore` means the
+platform locked them; **unset means "not decided yet" on API 35 and 36** (the platform decides from
+the install source when a restricted setting is first toggled) and "not locked" on API 33 and 34
+(where the platform sets the app-op at install time for file-sourced installs).
 
 ## 5. Running the check
 
@@ -72,10 +77,14 @@ python scripts/qa_sideload_prerequisites.py --package com.pennilogic.android --s
 ```
 
 Exit code 0 means every blocking prerequisite is met; advisories (developer options off, Play
-Protect verify on, a locked install source, developer verification applicable) are listed and, with
-`--strict`, also fail the run. Exit code 1 is a blocking finding: no `adb`, no or ambiguous device,
-or an API level below the minimum. The script runs only `adb` queries (`getprop`, `settings get`,
-`pm list packages`, `dumpsys package`, `appops get`).
+Protect verify on, a locked install source, developer verification applicable, a locked app-op) are
+listed and, with `--strict`, also fail the run. Exit code 1 is a blocking finding: no `adb`, no or
+ambiguous device, or an API level below the minimum. Exit code 2 is a usage error, for example a
+`--package` value that is not an Android package name; the value is validated before anything reaches
+the device shell. The script runs only `adb` queries (`getprop`, `settings get`, `pm list packages`,
+`dumpsys package`, `appops get`), matches the exact `package:<id>` line (so `com.pennilogic.android`
+is not reported as installed when only `com.pennilogic.android.debug` is present) and prints
+`physical-device` instead of a hardware serial.
 
 ## 6. Evidence for this baseline
 
@@ -83,6 +92,9 @@ or an API level below the minimum. The script runs only `adb` queries (`getprop`
   mirroring the app's `InstallSourceClassifier`, blocking versus advisory findings, exit codes.
 - Local run against the API 36 emulator recorded in the pull request; no device grant of a
   notification listener is claimed, because the listener is a capture feature ticket.
+- Evidence pasted into a pull request must not contain a hardware serial or any other device
+  identifier: the script prints emulator serials only and reports a physical device as
+  `physical-device`; do not add the serial back by hand.
 
 ## Sources
 

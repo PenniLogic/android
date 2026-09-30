@@ -29,8 +29,17 @@ fun interface ListenerAccessReader {
 }
 
 /**
- * Maps the platform's install-source report onto [InstallSource]. Pure JVM so the mapping is unit
- * tested exhaustively; the platform constants are inlined from `PackageInstaller` (API 33).
+ * The app's classification of the platform's install-source report onto [InstallSource]. Pure JVM so
+ * the mapping is unit tested exhaustively; the platform constants are inlined from `PackageInstaller`
+ * (API 33).
+ *
+ * A declared file source is the platform's own lock criterion and always wins. The legacy sideload
+ * path is recognised through two **proxies**, not platform rules: an installing or initiating package
+ * that is a package installer app (the AOSP, Google or a vendor build of it), and an install whose
+ * installing package is gone while the initiating package is not the shell. Any other installing
+ * package that used an install session is a store. A proxy can classify as `legacy_sideload` an
+ * install the platform never locked (a vendor installer that left the package source unset, an
+ * installer that was uninstalled); the consequence is only the destination of the recovery action.
  */
 object InstallSourceClassifier {
     const val PLAY_STORE_PACKAGE: String = "com.android.vending"

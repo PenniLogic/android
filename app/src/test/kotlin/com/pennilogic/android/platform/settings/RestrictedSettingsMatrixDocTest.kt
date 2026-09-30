@@ -2,6 +2,7 @@ package com.pennilogic.android.platform.settings
 
 import com.pennilogic.android.testing.RepositoryFiles
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -48,6 +49,27 @@ class RestrictedSettingsMatrixDocTest {
         }
         for (path in RecoveryPath.entries) assertTrue(path.id, prose.contains("`${path.id}`"))
         assertTrue(prose.contains("Allow restricted settings"))
+    }
+
+    @Test
+    fun `neither qa document spells out a way to weaken the restricted-settings lock`() {
+        val forbidden = listOf("appops set", "access_restricted_settings allow", "settings put global", "pm grant")
+        val documents =
+            listOf("docs/platform/restricted-settings-matrix.md", "docs/platform/sideloaded-qa-prerequisites.md")
+        for (name in documents) {
+            val text = RepositoryFiles.rootFile(name).readText().lowercase()
+            for (term in forbidden) {
+                assertFalse("$name contains '$term'", text.contains(term))
+            }
+        }
+        for (path in RecoveryPath.entries) {
+            for (step in path.steps) {
+                assertFalse(
+                    "${path.id} step spells out a bypass: $step",
+                    forbidden.any { step.lowercase().contains(it) },
+                )
+            }
+        }
     }
 
     companion object {

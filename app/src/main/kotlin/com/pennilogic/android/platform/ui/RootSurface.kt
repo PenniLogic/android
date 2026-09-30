@@ -2,6 +2,7 @@ package com.pennilogic.android.platform.ui
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -36,37 +37,43 @@ object RootSurfaceTags {
  * Android 16 draws every app edge-to-edge with no opt-out, so insets are applied exactly once, here,
  * and screens never consume window insets themselves: [insets] (safe drawing by default: system
  * bars, display cutout and keyboard) become padding of the inset area, and the content is laid out
- * by the [WindowWidthClass] of the window rather than by orientation or device type, so 600dp+
- * windows stay readable when the platform ignores orientation and aspect-ratio restrictions.
+ * by the [WindowWidthClass] of the **usable width after insets** — never by orientation or device
+ * type — so 600dp+ windows stay usable when the platform ignores orientation and aspect-ratio
+ * restrictions. [widthClass] overrides that derivation for tests and previews only.
  *
- * `RootSurfaceUsageTest` fails the build when a `setContent` root does not go through this
- * composable; `RootSurfaceLayoutTest` and the instrumented tests prove the inset and width behaviour.
+ * `PlatformBaselineSourceTest` (rules `composition root without RootSurface`, `window-insets import
+ * outside RootSurface`) fails the build when a `setContent` root does not call this composable or
+ * when another file imports the insets API; `RootSurfaceTest`, `MainActivityLayoutTest` and the
+ * instrumented tests prove the inset and width behaviour.
  */
 @Composable
 fun RootSurface(
     modifier: Modifier = Modifier,
     insets: WindowInsets = WindowInsets.safeDrawing,
-    widthClass: WindowWidthClass = currentWindowWidthClass(),
+    widthClass: WindowWidthClass? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
     Surface(
         modifier = modifier.fillMaxSize().testTag(RootSurfaceTags.SURFACE),
         color = MaterialTheme.colorScheme.background,
     ) {
-        Box(
+        BoxWithConstraints(
             modifier =
                 Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(insets)
                     .testTag(RootSurfaceTags.INSET_AREA),
         ) {
+            // The class is taken from the inset area, so a cutout or hinge at a class boundary cannot
+            // make the margins disagree with the width the content actually has.
+            val resolved = widthClass ?: WindowWidthClass.fromWidthDp(maxWidth.value.toInt())
             Box(
                 modifier =
                     Modifier
                         .align(Alignment.TopCenter)
                         .fillMaxHeight()
-                        .padding(horizontal = widthClass.horizontalMarginDp.dp)
-                        .widthIn(max = widthClass.contentMaxWidth)
+                        .padding(horizontal = resolved.horizontalMarginDp.dp)
+                        .widthIn(max = resolved.contentMaxWidth)
                         .fillMaxWidth()
                         .testTag(RootSurfaceTags.CONTENT),
                 content = content,

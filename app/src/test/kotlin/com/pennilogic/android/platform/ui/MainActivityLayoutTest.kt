@@ -1,6 +1,5 @@
 package com.pennilogic.android.platform.ui
 
-import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertLeftPositionInRootIsEqualTo
 import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.getBoundsInRoot
@@ -82,7 +81,7 @@ class MainActivityLayoutTest {
         )
         val expectedContentWidth = WindowWidthClass.contentWidthDp(insetArea.width.value.toInt())
         assertEquals(expectedContentWidth.dp, content.width)
-        compose.onNodeWithTag(ScaffoldScreenTags.HEADING).assertIsDisplayed()
+        ScaffoldAccessibility.assertContract(compose)
         val heading = compose.onNodeWithTag(ScaffoldScreenTags.HEADING).getBoundsInRoot()
         assertTrue(
             "heading inside content: $heading in $content",

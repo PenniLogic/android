@@ -43,7 +43,7 @@ class PenniLogicBackHandlerTest {
         var backs = 0
         val progress = mutableListOf<BackGestureProgress?>()
         compose.setContent {
-            PenniLogicBackHandler(onProgress = { progress += it }, onBack = { backs++ })
+            PenniLogicBackHandler(enabled = true, onProgress = { progress += it }, onBack = { backs++ })
             Box {}
         }
         compose.runOnIdle {
@@ -62,7 +62,7 @@ class PenniLogicBackHandlerTest {
         var backs = 0
         val progress = mutableListOf<BackGestureProgress?>()
         compose.setContent {
-            PenniLogicBackHandler(onProgress = { progress += it }, onBack = { backs++ })
+            PenniLogicBackHandler(enabled = true, onProgress = { progress += it }, onBack = { backs++ })
             Box {}
         }
         val dispatcher = compose.activity.onBackPressedDispatcher
