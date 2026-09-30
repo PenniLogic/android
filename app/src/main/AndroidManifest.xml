@@ -1,19 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- No permissions are requested by the scaffold. -->
 
+    <!--
+        Android 16 baseline (android#57): predictive back is opted in for the whole application, so
+        the system back-to-home, cross-task and cross-activity animations run and no legacy
+        onBackPressed()/KEYCODE_BACK path exists. No activity may set this to false, and no
+        orientation, resizability or aspect-ratio restriction may be declared: on API 36 the
+        platform ignores them on 600dp+ screens and the app must stay usable without them.
+        enableOnBackInvokedCallback exists from API 33 and is ignored below it, hence the scoped
+        UnusedAttribute suppression on this element only.
+    -->
     <application
         android:name=".PenniLogicApplication"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
+        android:enableOnBackInvokedCallback="true"
         android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
         android:theme="@style/Theme.PenniLogic"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="false"
+        tools:ignore="UnusedAttribute">
 
         <activity
             android:name=".MainActivity"

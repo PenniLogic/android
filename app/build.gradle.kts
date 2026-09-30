@@ -1,4 +1,6 @@
+import com.android.build.api.artifact.SingleArtifact
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+import org.gradle.process.CommandLineArgumentProvider
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -94,6 +96,7 @@ android {
                 .toInt()
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "BUILD_LABEL", buildConfigString(buildLabel))
     }
 
@@ -149,8 +152,9 @@ android {
         abortOnError = true
         warningsAsErrors = true
         checkReleaseBuilds = true
-        // targetSdk is deliberately pinned to the agreed Android 16 / API 36 baseline; raising it is
-        // the behaviour-baseline ticket's decision, so the "newer target exists" check is disabled.
+        // targetSdk is pinned to the Play-required Android 16 / API 36 baseline (android#57). Raising it
+        // is a reviewed decision guarded by TargetConformanceTest, so the "newer target exists" check
+        // is disabled.
         disable += "OldTargetApi"
         // "A newer version is available" checks depend on the release calendar and the network, so
         // they would fail a pinned build non-deterministically. Versions are owned by the catalogue.
@@ -158,12 +162,44 @@ android {
     }
 
     testOptions {
+        unitTests.isIncludeAndroidResources = true
         unitTests.all { test ->
             test.useJUnit()
+            // Robolectric on Java 17+ needs these module opens (robolectric.org/getting-started).
+            test.jvmArgs(
+                "--add-opens=java.base/java.lang=ALL-UNNAMED",
+                "--add-opens=java.base/java.util=ALL-UNNAMED",
+                "--add-opens=java.base/java.io=ALL-UNNAMED",
+                "--add-opens=java.base/java.net=ALL-UNNAMED",
+                "--add-opens=java.base/java.security=ALL-UNNAMED",
+                "--add-opens=java.base/java.text=ALL-UNNAMED",
+                "--add-opens=java.base/jdk.internal.access=ALL-UNNAMED",
+                "--add-opens=java.desktop/java.awt.font=ALL-UNNAMED",
+                "--add-opens=jdk.compiler/com.sun.tools.javac.api=ALL-UNNAMED",
+            )
             test.testLogging {
                 events("passed", "skipped", "failed")
                 exceptionFormat = TestExceptionFormat.FULL
             }
+        }
+    }
+}
+
+// Hand each variant's merged manifest to its unit tests so TargetConformanceTest can prove that no
+// library manifest or source-set override lowers the effective target below the API 36 baseline.
+androidComponents {
+    onVariants { variant ->
+        val mergedManifest = variant.artifacts.get(SingleArtifact.MERGED_MANIFEST)
+        val unitTestTask = "test${variant.name.replaceFirstChar(Char::uppercaseChar)}UnitTest"
+        tasks.withType<Test>().matching { it.name == unitTestTask }.configureEach {
+            inputs
+                .file(mergedManifest)
+                .withPropertyName("mergedManifest")
+                .withPathSensitivity(PathSensitivity.NONE)
+            jvmArgumentProviders +=
+                CommandLineArgumentProvider {
+                    listOf("-Dpennilogic.mergedManifest=${mergedManifest.get().asFile.absolutePath}")
+                }
         }
     }
 }
@@ -178,9 +214,25 @@ kotlin {
 dependencies {
     implementation(platform(libs.compose.bom))
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.core.ktx)
     implementation(libs.compose.material3)
     implementation(libs.compose.ui.tooling.preview)
     debugImplementation(libs.compose.ui.tooling)
+    // Hosts synthetic compositions for the debug-variant Compose tests (JVM and instrumented).
+    debugImplementation(libs.compose.ui.test.manifest)
 
     testImplementation(libs.junit4)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.gson)
+    testImplementation(libs.androidx.test.core.ktx)
+    testImplementation(libs.androidx.test.ext.junit.ktx)
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.compose.ui.test.junit4)
+
+    androidTestImplementation(platform(libs.compose.bom))
+    androidTestImplementation(libs.compose.ui.test.junit4)
+    androidTestImplementation(libs.androidx.test.core.ktx)
+    androidTestImplementation(libs.androidx.test.ext.junit.ktx)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.uiautomator)
 }

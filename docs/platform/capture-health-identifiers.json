@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "published_by": "PenniLogic/android#57 (T-AND-07)",
+  "purpose": "Android platform-capability and capture-health condition identifiers consumed by T-UX-01 and T-QA-12. Every identifier binds to exactly one state of the shared client state taxonomy; Android adds no state of its own.",
+  "taxonomy": {
+    "source": "PenniLogic/docs product/client-state-taxonomy.json (T-UX-01, PenniLogic/docs#1)",
+    "version": "1.0.0",
+    "source_commit": "6eb4da6",
+    "signal_prefix": "client_state.",
+    "states": [
+      "empty",
+      "loading",
+      "error",
+      "offline",
+      "stale",
+      "permission_denied",
+      "quota_exceeded",
+      "degraded"
+    ],
+    "state_scopes": {
+      "empty": [
+        "surface",
+        "region"
+      ],
+      "loading": [
+        "surface",
+        "region",
+        "action"
+      ],
+      "error": [
+        "surface",
+        "region",
+        "action"
+      ],
+      "offline": [
+        "surface",
+        "region",
+        "action"
+      ],
+      "stale": [
+        "surface",
+        "region"
+      ],
+      "permission_denied": [
+        "surface",
+        "region",
+        "action"
+      ],
+      "quota_exceeded": [
+        "region",
+        "action"
+      ],
+      "degraded": [
+        "surface"
+      ]
+    },
+    "permission_denied_causes": [
+      "device",
+      "plan",
+      "sharing",
+      "role"
+    ],
+    "signal_attributes": [
+      "client",
+      "surface_id",
+      "scope",
+      "cause",
+      "permission",
+      "recovery_action_taken",
+      "taxonomy_version"
+    ],
+    "permission_attribute_pattern": "android\\.(permission|app\\.role)\\.[A-Z][A-Z0-9_]*"
+  },
+  "conditions": [
+    {
+      "id": "capture_paused_by_platform",
+      "binds_to": "degraded",
+      "cause": null,
+      "recovery_action": "retry",
+      "description": "Automatic capture is paused for a platform reason (force-stop, private-space lock, restricted standby bucket, background restriction) while the rest of the app works. The surface stays fully usable and shows the degraded notice naming automatic capture until capture health is restored."
+    },
+    {
+      "id": "capture_blocked_by_setting",
+      "binds_to": "permission_denied",
+      "cause": "device",
+      "recovery_action": "review_access",
+      "description": "Automatic capture cannot run because a permission or a restricted setting is not granted. Rendered with the device cause; the recovery action opens the platform's own settings page or prompt."
+    },
+    {
+      "id": "device_permission_not_granted",
+      "binds_to": "permission_denied",
+      "cause": "device",
+      "recovery_action": "review_access",
+      "description": "Any other platform permission or restricted setting reported as not granted. Client-determined; no service result."
+    }
+  ],
+  "reasons": [
+    {
+      "id": "force_stopped",
+      "condition": "capture_paused_by_platform",
+      "status": "planned_pr2",
+      "description": "The user force-stopped the app. Receivers, jobs and pending intents stay off until the user opens the app again; on Android 15+ pending intents are also cancelled.",
+      "detection": "Planned (PR 2): API 35+ ApplicationStartInfo.wasForceStopped() on the first start after the stop; API 30-34 ApplicationExitInfo.getReason() == REASON_USER_REQUESTED for the last exit; below API 30 not detectable, capture health is re-probed instead.",
+      "clears_when": "Capture health is restored: the capture components are registered again and a health probe succeeds. A process start alone never clears it."
+    },
+    {
+      "id": "private_space_paused",
+      "condition": "capture_paused_by_platform",
+      "status": "planned_pr2",
+      "description": "The private space holding the app was locked, which stops every app inside it and hides its notifications; nothing is captured until the space is unlocked.",
+      "detection": "Planned (PR 2): running in a non-managed profile (UserManager.isProfile() && !isManagedProfile(), API 33+) and the last exit reason was REASON_USER_STOPPED or the start reports wasForceStopped(). The public SDK cannot name the private space explicitly, so a clone profile is classified the same way.",
+      "clears_when": "Capture health is restored after the space is unlocked.",
+      "privacy": "Records that the user chose to run the app inside a private space, which is a concealment choice: local and aggregate-only, never joined to an account identifier, never exported by this baseline."
+    },
+    {
+      "id": "standby_bucket_restricted",
+      "condition": "capture_paused_by_platform",
+      "status": "planned_pr2",
+      "description": "The app is in the restricted standby bucket, so jobs run about once a day and the capture pipeline cannot keep up.",
+      "detection": "Planned (PR 2): UsageStatsManager.getAppStandbyBucket() == STANDBY_BUCKET_RESTRICTED (45).",
+      "clears_when": "The bucket improves; re-probed on each start and each job run."
+    },
+    {
+      "id": "background_restricted",
+      "condition": "capture_paused_by_platform",
+      "status": "planned_pr2",
+      "description": "The user applied a background restriction to the app in system settings; background work is not run.",
+      "detection": "Planned (PR 2): ActivityManager.isBackgroundRestricted().",
+      "clears_when": "The restriction is lifted; re-probed on each start."
+    },
+    {
+      "id": "listener_access_not_granted",
+      "condition": "capture_blocked_by_setting",
+      "status": "implemented",
+      "description": "Notification access is not granted for the capture listener; the install source is not locked, so the normal settings page enables it.",
+      "detection": "NotificationManagerCompat.getEnabledListenerPackages() does not contain the package.",
+      "clears_when": "The user grants notification access."
+    },
+    {
+      "id": "restricted_setting_locked",
+      "condition": "capture_blocked_by_setting",
+      "status": "implemented",
+      "description": "The restricted-settings matrix says this install source is locked on this API level and the setting is not granted. The rendered copy is the canonical device-cause copy of permission_denied, unchanged; what this reason changes is only the destination of the single review_access action: the app's App info page (where the platform offers Allow restricted settings) instead of the setting's own page.",
+      "detection": "Setting not granted and RestrictedSettingsMatrix.availability(installSource, setting, apiLevel).isLocked.",
+      "clears_when": "The user unlocks restricted settings for the app and grants the setting, or the build is reinstalled from an unlocked source. Step-by-step unlock guidance is tester documentation (RecoveryPath), not product copy."
+    },
+    {
+      "id": "capture_permission_not_granted",
+      "condition": "capture_blocked_by_setting",
+      "status": "planned_pr2",
+      "description": "A runtime permission capture needs (SMS) is not granted.",
+      "detection": "Planned (PR 2): ContextCompat.checkSelfPermission() != PERMISSION_GRANTED for the capture permission, read by a capture-permission probe; this baseline declares and requests no such permission, so no probe exists in it.",
+      "clears_when": "The user grants the permission."
+    }
+  ],
+  "capture_health": {
+    "description": "The value android keeps for the capture pipeline. It is not a taxonomy state: healthy renders as content, the other values render through the bound condition.",
+    "values": [
+      {
+        "id": "healthy",
+        "condition": null
+      },
+      {
+        "id": "paused",
+        "condition": "capture_paused_by_platform"
+      },
+      {
+        "id": "blocked",
+        "condition": "capture_blocked_by_setting"
+      }
+    ]
+  },
+  "observability": {
+    "event": "capture_health",
+    "attributes": [
+      "api_level",
+      "target_api",
+      "stop_reason",
+      "standby_bucket",
+      "capture_health",
+      "condition",
+      "reason"
+    ],
+    "never_recorded": [
+      "device identifier",
+      "transaction content or amounts",
+      "message or notification content",
+      "account or grant identifiers"
+    ],
+    "note": "The taxonomy signal client_state.<identifier> keeps exactly the published attributes; the condition and reason travel in android's own capture_health log event, not in the signal. private_space_paused is counted locally and in aggregate only and is never joined to an account identifier.",
+    "sink": "Local Log.i with tag PenniLogic only; no telemetry export exists in this baseline. Any future export names its purpose, aggregation and retention here first.",
+    "retention": "The device logcat ring buffer; nothing is persisted by the app for this event."
+  },
+  "requests_to_taxonomy_owner": [
+    "Record the seven reason identifiers above as the published platform-capability identifiers under capture_paused_by_platform and capture_blocked_by_setting (PenniLogic/docs#1 definition of done, item 3).",
+    "Confirm that the capture surface's {capability} placeholder value is 'Automatic capture' and its {permission} values are the platform permission names listed in the restricted-settings matrix.",
+    "If product copy should guide the user through the restricted-settings unlock step by step, add that guidance to the taxonomy (a device-cause variant or a placeholder) first; until then restricted_setting_locked only changes the review_access destination."
+  ]
+}
