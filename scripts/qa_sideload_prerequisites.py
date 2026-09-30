@@ -13,7 +13,10 @@ Usage:
 
 Exit codes: 0 every blocking prerequisite is met (advisories may be listed); 1 a blocking prerequisite
 is missing (no adb, no or ambiguous device, API below the minimum) or, with --strict, an advisory is
-open; 2 usage error.
+open; 2 usage error (for example a value that is not an Android package name).
+
+The report never contains a hardware serial: emulator serials are printed as they are, a physical
+device is reported as `physical-device`, so the output can be pasted into a pull request.
 """
 
 from __future__ import annotations
@@ -32,12 +35,17 @@ MIN_API = 26
 TARGET_API = 36
 QA_API_LEVELS = (31, 33, 35, 36)
 RESTRICTED_SETTINGS_FROM_API = 33
+ENHANCED_CONFIRMATION_FROM_API = 35
 DEBUG_PACKAGE = "com.pennilogic.android.debug"
 RELEASE_PACKAGE = "com.pennilogic.android"
 PLAY_STORE = "com.android.vending"
+SHELL_PACKAGE = "com.android.shell"
 PACKAGE_INSTALLERS = {"com.google.android.packageinstaller", "com.android.packageinstaller"}
 # PackageInstaller.PACKAGE_SOURCE_* (API 33) as dumpsys prints them.
 PACKAGE_SOURCE_NAMES = {0: "unspecified", 1: "other", 2: "store", 3: "local_file", 4: "downloaded_file"}
+# Android package-name grammar: dot-separated Java identifiers, at least two segments.
+PACKAGE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$")
+EMULATOR_SERIAL = re.compile(r"^emulator-\d+$")
 
 Adb = Callable[[list[str]], str]
 
@@ -51,11 +59,14 @@ class Finding:
 
 @dataclass
 class Report:
-    serial: str | None = None
+    """The report; `device` is the emulator serial or `physical-device`, never a hardware serial."""
+
+    device: str | None = None
     api_level: int | None = None
     package: str = DEBUG_PACKAGE
     installed: bool = False
     installer: str | None = None
+    initiating_installer: str | None = None
     package_source: str | None = None
     install_source: str | None = None
     restricted_settings_op: str | None = None
@@ -78,6 +89,13 @@ class Report:
         if strict and self.advisories:
             return 1
         return 0
+
+
+def redact_serial(serial: str | None) -> str | None:
+    """Emulator serials are not identifying; anything else is a hardware serial and is withheld."""
+    if serial is None:
+        return None
+    return serial if EMULATOR_SERIAL.match(serial) else "physical-device"
 
 
 def adb_path() -> str | None:
@@ -122,9 +140,22 @@ def parse_setting(output: str) -> str | None:
     return None if value in ("", "null") else value
 
 
-def parse_installer(output: str) -> str | None:
-    """Installer from `pm list packages -i <pkg>` (`package:<pkg>  installer=<name>`)."""
-    match = re.search(r"installer=(\S+)", output or "")
+def package_line(output: str, package: str) -> str | None:
+    """The `package:<pkg>` line for exactly `package` in `pm list packages` output, or None.
+
+    `pm list packages FILTER` is a substring filter, so `com.pennilogic.android` also lists
+    `com.pennilogic.android.debug` and `com.pennilogic.android.debug.test`; only the exact line counts.
+    """
+    pattern = re.compile(r"^package:" + re.escape(package) + r"(\s|$)")
+    for line in (output or "").splitlines():
+        if pattern.match(line.strip()):
+            return line.strip()
+    return None
+
+
+def parse_installer(line: str | None) -> str | None:
+    """Installer from one exact `package:<pkg>  installer=<name>` line."""
+    match = re.search(r"installer=(\S+)", line or "")
     if not match:
         return None
     installer = match.group(1)
@@ -139,6 +170,15 @@ def parse_package_source(output: str) -> str | None:
     return PACKAGE_SOURCE_NAMES.get(int(match.group(1)), match.group(1))
 
 
+def parse_initiating_package(output: str) -> str | None:
+    """`initiatingPackageName=` from `dumpsys package <pkg>` (API 30+), or None."""
+    match = re.search(r"initiatingPackageName=(\S+)", output or "")
+    if not match:
+        return None
+    value = match.group(1)
+    return None if value == "null" else value
+
+
 def parse_appop(output: str) -> str | None:
     """Mode of ACCESS_RESTRICTED_SETTINGS from `appops get`, or None when the op was never set."""
     match = re.search(r"ACCESS_RESTRICTED_SETTINGS:\s*(\w+)", output or "")
@@ -150,22 +190,26 @@ def is_package_installer(package: str | None) -> bool:
     return package is not None and (package in PACKAGE_INSTALLERS or package.endswith(".packageinstaller"))
 
 
-def classify_install_source(installer: str | None, package_source: str | None) -> str:
-    """Mirror of InstallSourceClassifier (app/src/main/.../settings/InstallSourceProbe.kt)."""
+def classify_install_source(installer: str | None, initiating: str | None, package_source: str | None) -> str:
+    """Mirror of InstallSourceClassifier (app/src/main/.../settings/InstallSourceProbe.kt): same inputs, same order."""
     if package_source in ("local_file", "downloaded_file"):
         return "session_file"
     if installer == PLAY_STORE:
         return "play_store"
-    if is_package_installer(installer):
+    if is_package_installer(installer) or is_package_installer(initiating):
         return "legacy_sideload"
-    if installer is None:
+    if installer is None and initiating in (None, SHELL_PACKAGE):
         return "adb"
+    if installer is None:
+        return "legacy_sideload"
     return "session_store"
 
 
 def collect(adb: Adb, package: str = DEBUG_PACKAGE, serial: str | None = None) -> Report:
     """Run every check against one device and return the report; pure apart from the adb calls."""
-    report = Report(serial=serial, package=package)
+    if not PACKAGE_NAME.match(package):
+        raise ValueError(f"not an Android package name: {package!r}")
+    report = Report(device=redact_serial(serial), package=package)
     api_level = parse_int(adb(["shell", "getprop", "ro.build.version.sdk"]))
     report.api_level = api_level
     if api_level is None:
@@ -190,7 +234,7 @@ def collect(adb: Adb, package: str = DEBUG_PACKAGE, serial: str | None = None) -
     else:
         report.add("advisory", "play_protect_adb", "Play Protect verifies adb installs; expect a one-time prompt, never disable Play Protect")
 
-    play_installed = "package:" in adb(["shell", "pm", "list", "packages", PLAY_STORE])
+    play_installed = package_line(adb(["shell", "pm", "list", "packages", PLAY_STORE]), PLAY_STORE) is not None
     if play_installed:
         report.add(
             "advisory",
@@ -201,18 +245,24 @@ def collect(adb: Adb, package: str = DEBUG_PACKAGE, serial: str | None = None) -
     else:
         report.add("ok", "developer_verification", "no Google Play on this device (AOSP or google_apis image); verification does not apply")
 
-    installed_line = adb(["shell", "pm", "list", "packages", "-i", package])
-    report.installed = f"package:{package}" in installed_line
+    exact_line = package_line(adb(["shell", "pm", "list", "packages", "-i", package]), package)
+    report.installed = exact_line is not None
     if not report.installed:
         report.add("ok", "install_source", f"{package} is not installed; install with `adb install -r <apk>` so no restricted setting is locked")
         return report
 
-    report.installer = parse_installer(installed_line)
-    dumpsys = adb(["shell", "dumpsys", "package", package]) if api_level >= RESTRICTED_SETTINGS_FROM_API else ""
-    report.package_source = parse_package_source(dumpsys)
-    report.install_source = classify_install_source(report.installer, report.package_source)
+    report.installer = parse_installer(exact_line)
+    dumpsys = adb(["shell", "dumpsys", "package", package]) if api_level >= 30 else ""
+    report.initiating_installer = parse_initiating_package(dumpsys)
+    report.package_source = parse_package_source(dumpsys) if api_level >= RESTRICTED_SETTINGS_FROM_API else None
+    report.install_source = classify_install_source(report.installer, report.initiating_installer, report.package_source)
     if report.install_source in ("adb", "play_store", "session_store"):
-        report.add("ok", "install_source", f"{package} came from `{report.install_source}`; restricted settings do not lock it")
+        report.add(
+            "ok",
+            "install_source",
+            f"{package} came from `{report.install_source}`; the platform's restricted-settings lock does not apply to this "
+            "source on an AOSP-default device",
+        )
     else:
         report.add(
             "advisory",
@@ -224,8 +274,24 @@ def collect(adb: Adb, package: str = DEBUG_PACKAGE, serial: str | None = None) -
     if api_level >= RESTRICTED_SETTINGS_FROM_API:
         report.restricted_settings_op = parse_appop(adb(["shell", "appops", "get", package, "ACCESS_RESTRICTED_SETTINGS"]))
         mode = report.restricted_settings_op
-        if mode in (None, "allow", "default"):
-            report.add("ok", "restricted_settings", f"ACCESS_RESTRICTED_SETTINGS is {mode or 'unset'}; sensitive settings are not locked")
+        if mode == "allow":
+            report.add("ok", "restricted_settings", "ACCESS_RESTRICTED_SETTINGS is allow; the user has unlocked restricted settings for the app")
+        elif mode in (None, "default"):
+            if api_level >= ENHANCED_CONFIRMATION_FROM_API:
+                report.add(
+                    "ok",
+                    "restricted_settings",
+                    f"ACCESS_RESTRICTED_SETTINGS is {mode or 'unset'}: the platform has not marked this install yet; on API "
+                    f"{ENHANCED_CONFIRMATION_FROM_API}+ the lock is decided from the install source (`install_source` above) when a "
+                    "restricted setting is first toggled, so unset means undecided, not unlocked",
+                )
+            else:
+                report.add(
+                    "ok",
+                    "restricted_settings",
+                    f"ACCESS_RESTRICTED_SETTINGS is {mode or 'unset'}; on API 33/34 the platform sets it at install time for "
+                    "file-sourced installs, so this install is not locked",
+                )
         else:
             report.add(
                 "advisory",
@@ -238,9 +304,10 @@ def collect(adb: Adb, package: str = DEBUG_PACKAGE, serial: str | None = None) -
 
 def render(report: Report) -> str:
     lines = [
-        f"device: {report.serial or 'default'}  api: {report.api_level}  package: {report.package}",
-        f"installed: {report.installed}  installer: {report.installer}  package_source: {report.package_source}  "
-        f"install_source: {report.install_source}  ACCESS_RESTRICTED_SETTINGS: {report.restricted_settings_op}",
+        f"device: {report.device or 'default'}  api: {report.api_level}  package: {report.package}",
+        f"installed: {report.installed}  installer: {report.installer}  initiating: {report.initiating_installer}  "
+        f"package_source: {report.package_source}  install_source: {report.install_source}  "
+        f"ACCESS_RESTRICTED_SETTINGS: {report.restricted_settings_op}",
     ]
     for finding in report.findings:
         lines.append(f"[{finding.level:8}] {finding.check}: {finding.detail}")
@@ -256,6 +323,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--strict", action="store_true", help="advisory findings also produce exit code 1")
     args = parser.parse_args(argv)
 
+    # Validated before anything reaches `adb shell`, which joins its arguments into one device shell line.
+    if not PACKAGE_NAME.match(args.package):
+        print(f"usage: --package must be an Android package name (dot-separated identifiers), got {args.package!r}", file=sys.stderr)
+        return 2
+    if args.serial is not None and not re.match(r"^[A-Za-z0-9._:-]+$", args.serial):
+        print("usage: --serial must be an adb serial (letters, digits, '.', '_', ':' and '-')", file=sys.stderr)
+        return 2
+
     binary = adb_path()
     if binary is None:
         print("blocking: adb not found on PATH or under ANDROID_HOME/platform-tools", file=sys.stderr)
@@ -264,11 +339,11 @@ def main(argv: list[str] | None = None) -> int:
     serial = args.serial
     if serial is None:
         if len(devices) != 1:
-            print(f"blocking: expected exactly one connected device, found {devices}; use --serial", file=sys.stderr)
+            print(f"blocking: expected exactly one connected device, found {len(devices)}; use --serial", file=sys.stderr)
             return 1
         serial = devices[0]
     elif serial not in devices:
-        print(f"blocking: device {serial} is not connected; connected: {devices}", file=sys.stderr)
+        print(f"blocking: device {redact_serial(serial)} is not connected ({len(devices)} device(s) connected)", file=sys.stderr)
         return 1
 
     report = collect(make_adb(binary, serial), package=args.package, serial=serial)

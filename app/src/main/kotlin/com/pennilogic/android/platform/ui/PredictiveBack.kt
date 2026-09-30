@@ -30,10 +30,16 @@ data class BackGestureProgress(
  * receives its progress, a cancelled gesture clears it with `null`, and a committed gesture clears it
  * and then calls [onBack]. When [enabled] is false nothing is registered, so the system back-to-home
  * animation runs untouched.
+ *
+ * **No back trap.** [enabled] is required and must be `true` only while there is something in-app to
+ * go back to (an open sheet, an active search field, an unsaved edit): an always-enabled handler on a
+ * root screen suppresses the system back-to-home preview and leaves the user unable to leave the app.
+ * A no-op [onBack] with `enabled = true` is therefore a defect. `SourceRules` fails the build for a
+ * call that does not state `enabled` explicitly.
  */
 @Composable
 fun PenniLogicBackHandler(
-    enabled: Boolean = true,
+    enabled: Boolean,
     onProgress: (BackGestureProgress?) -> Unit = {},
     onBack: () -> Unit,
 ) {

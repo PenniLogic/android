@@ -54,12 +54,12 @@ Apps draw behind the system bars; the app applies insets itself.
 | 35 | Enforced for apps targeting 35: system bars are transparent and content extends behind them; R.attr.windowOptOutEdgeToEdgeEnforcement can opt out. |
 | 36 | Enforced with no opt-out for apps targeting 36: windowOptOutEdgeToEdgeEnforcement is deprecated and disabled on Android 16 devices. |
 
-**App handling.** RootSurface applies WindowInsets.safeDrawing exactly once at every composition root; MainActivity still calls enableEdgeToEdge() so API 26-34 behave like 35+; no theme sets windowOptOutEdgeToEdgeEnforcement; screens never consume insets themselves.
+**App handling.** RootSurface applies WindowInsets.safeDrawing exactly once at every composition root; MainActivity still calls enableEdgeToEdge() so API 26-34 behave like 35+; no value resource sets windowOptOutEdgeToEdgeEnforcement; no other main source imports the window-insets API (guarded by import and by call in SourceRules).
 
 **Evidence.**
 
-- TargetConformanceTest: themes never opt out of edge-to-edge enforcement (JVM, CI, both variants)
-- PlatformBaselineSourceTest: window insets are applied only by the root surface; every composition root goes through the root surface (JVM, CI)
+- TargetConformanceTest: no resource opts out of edge-to-edge enforcement (JVM, CI, both variants)
+- PlatformBaselineSourceTest + SourceRulesSelfTest: the window-insets API is imported and used only by RootSurface; every composition root calls RootSurface (JVM, CI; rules proven on planted snippets)
 - RootSurfaceTest: injected insets become padding of the inset area (Robolectric SDK 36, CI, debug)
 - ApiLevelMatrixTest: the root surface renders on the SDK 31, 33, 35 and 36 runtimes (Robolectric, CI, both variants)
 - EdgeToEdgeInstrumentedTest (androidTest, local API 36 emulator only)
@@ -77,12 +77,12 @@ System back animations and the OnBackInvokedCallback model replace onBackPressed
 | 35 | System animations (back-to-home, cross-task, cross-activity) run for apps that opted in; no developer option needed. |
 | 36 | For apps targeting 36 the animations are on by default, onBackPressed() is not called and KEYCODE_BACK is not dispatched; 3-button navigation long-press previews the animation; opt-out only via enableOnBackInvokedCallback=false. |
 
-**App handling.** The application opts in with android:enableOnBackInvokedCallback="true"; no activity may set it to false; no onBackPressed()/onKeyDown override exists; screens intercept back only through PenniLogicBackHandler (PredictiveBackHandler over the OnBackPressedDispatcher, which bridges to the platform dispatcher on 33+).
+**App handling.** The application opts in with android:enableOnBackInvokedCallback="true"; no activity may set it to false; no onBackPressed()/onKeyDown override exists; screens intercept back only through PenniLogicBackHandler (PredictiveBackHandler over the OnBackPressedDispatcher, which bridges to the platform dispatcher on 33+), whose enabled argument is required and must be true only while there is something in-app to go back to, so no root screen can trap the system back.
 
 **Evidence.**
 
 - TargetConformanceTest: predictive back is enabled for the application and disabled for no activity (JVM, CI, both variants)
-- PlatformBaselineSourceTest: no legacy back callback survives; back is intercepted only through the predictive-back primitive (JVM, CI)
+- PlatformBaselineSourceTest + SourceRulesSelfTest: no legacy back callback survives; back is registered only through the predictive-back primitive, guarded by import and by call including the trailing-lambda form; every PenniLogicBackHandler call states enabled (JVM, CI)
 - PenniLogicBackHandlerTest: progress forwarded, cleared on cancel, onBack on commit; disabled handler falls through (Robolectric SDK 36, CI, debug)
 - MainActivityLayoutTest: unhandled back finishes the activity through the dispatcher (Robolectric SDK 36, CI, both variants)
 - ApiLevelMatrixTest: unhandled back finishes the activity on the SDK 31, 33, 35 and 36 runtimes (Robolectric, CI, both variants)
@@ -101,7 +101,7 @@ On 600dp+ displays the platform ignores orientation, resizability and aspect-rat
 | 35 | Same as 33; user-configurable aspect-ratio overrides exist on some large-screen devices. |
 | 36 | For apps targeting 36 on displays with smallest width >= 600dp all of those restrictions are ignored: the app is resizable, fills the window and follows the user's orientation. A temporary manifest opt-out property exists on Android 16 and is removed in Android 17. |
 
-**App handling.** No activity declares screenOrientation, resizeableActivity=false or an aspect ratio; no android.window.PROPERTY_COMPAT_* property is declared; no code calls setRequestedOrientation(); RootSurface lays out by WindowWidthClass (compact <600dp, medium 600-839dp, expanded >=840dp with an 840dp readable-content cap) so the scaffold stays usable at any width and orientation.
+**App handling.** No activity declares screenOrientation, resizeableActivity=false or an aspect ratio; no android.window.PROPERTY_COMPAT_* property is declared; no code calls setRequestedOrientation(); RootSurface lays out by the WindowWidthClass of the usable width after insets (compact <600dp, medium 600-839dp, expanded >=840dp with an 840dp single-pane layout cap) so the scaffold stays usable at any width and orientation. The cap is a pane cap, not a readable measure: prose line length is the design system's (T-DSY-01) typography decision.
 
 **Evidence.**
 
@@ -119,11 +119,11 @@ Sideloaded builds cannot enable sensitive settings until the user unlocks them i
 | API | Platform behaviour |
 | --- | --- |
 | 31 | No restricted settings. |
-| 33 | Notification listener and accessibility service locked for builds installed from a user-acquired file (intent-based installer or a session declaring a local/downloaded file source); unlock via App info > Allow restricted settings. |
-| 35 | Lock extended by the Android 15 CDD to device admin, display over other apps, usage access, the SMS runtime permission and the default SMS and phone roles. |
+| 33 | Notification listener and accessibility service locked at install time iff the installer declared a local/downloaded file package source (InstallPackageHelper.enableRestrictedSettings); unlock via App info > Allow restricted settings. |
+| 35 | Enhanced Confirmation Mode: file-sourced installs always guarded, other installers guarded unless the device trusts non-allowlisted installers (AOSP default) or the installer is preinstalled/allowlisted; decided lazily at the first toggle. Set extended by the Android 15 CDD to device admin, display over other apps, usage access, the SMS runtime permission and the default SMS and phone roles. |
 | 36 | Same set as 35. |
 
-**App handling.** RestrictedSettingsMatrix states every source x setting x API cell; CaptureSettingsProbe classifies the install source from getInstallSourceInfo and renders capture_blocked_by_setting with reason restricted_setting_locked or listener_access_not_granted; the app never reads or changes ACCESS_RESTRICTED_SETTINGS.
+**App handling.** RestrictedSettingsMatrix states every source x setting x API cell for an AOSP-default device (API 33/34 lock keyed on the declared package source; API 35/36 lock keyed on installer trust, decided lazily); CaptureSettingsProbe classifies the install source from getInstallSourceInfo through the app's proxies and renders capture_blocked_by_setting with reason restricted_setting_locked (which changes only the recovery destination) or listener_access_not_granted; the app never reads or changes ACCESS_RESTRICTED_SETTINGS.
 
 **Evidence.**
 

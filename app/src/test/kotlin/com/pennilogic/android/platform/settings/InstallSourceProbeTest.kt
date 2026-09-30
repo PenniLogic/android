@@ -41,7 +41,8 @@ class InstallSourceClassifierTest {
                 InstallSourceSnapshot("com.android.chrome", "com.android.chrome", 4) to InstallSource.SESSION_FILE,
                 // A declared file source wins even when the installing package looks like a store.
                 InstallSourceSnapshot("com.android.vending", "com.android.vending", 4) to InstallSource.SESSION_FILE,
-                // An installer that disappeared leaves no installing package: treated as a sideload, never unlocked.
+                // An installer that disappeared leaves no installing package: the proxy treats it as a sideload
+                // (the platform may not have locked it; only the recovery destination is affected).
                 InstallSourceSnapshot(null, "com.example.installer", 0) to InstallSource.LEGACY_SIDELOAD,
             )
         for ((snapshot, expected) in cases) {

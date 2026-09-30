@@ -9,17 +9,28 @@ import androidx.compose.ui.unit.dp
 import com.pennilogic.android.platform.PlatformBaseline
 
 /**
- * Width class of the current window, following the Material 3 breakpoints. On Android 16 a window
- * can be any width at any time on 600dp+ screens, because the platform ignores orientation,
- * resizability and aspect-ratio restrictions; every root surface therefore lays out by this class
- * and never by device type or orientation.
+ * Width class of the usable width, following the Material 3 breakpoints at 600dp and 840dp. On
+ * Android 16 a window can be any width at any time on 600dp+ screens, because the platform ignores
+ * orientation, resizability and aspect-ratio restrictions; every root surface therefore lays out by
+ * this class and never by device type or orientation. [RootSurface] derives it from the width
+ * **after insets** (the inset area), so a cutout or hinge at a class boundary cannot make margins and
+ * content width disagree.
+ *
+ * The enum deliberately stops at [EXPANDED]: Material 3's newer `large` (≥1200dp) and `extra-large`
+ * (≥1600dp) classes matter for multi-pane layouts, which no PenniLogic surface has yet; the design
+ * system ticket (`T-DSY-01`) extends the enum when a pane layout needs them.
+ *
+ * [contentMaxWidthDp] is a **layout cap for a single pane**, not a readable measure: at Material's
+ * `bodyLarge` a full 840dp line holds roughly 110 characters, and medium windows are not capped at
+ * all. Line length for prose (the 45–75 character measure) is a typography decision that belongs to
+ * the design system (`T-DSY-01`) and its text components, which this baseline does not pre-empt.
  */
 enum class WindowWidthClass(
     /** Inclusive lower bound of the class, in dp. */
     val minWidthDp: Int,
-    /** Widest readable single-pane content, or null when the content fills the window. */
+    /** Widest single pane, or null when the content fills the usable width. */
     val contentMaxWidthDp: Int?,
-    /** Horizontal margin between the window edge (after insets) and the content. */
+    /** Horizontal margin between the inset area's edge and the content. */
     val horizontalMarginDp: Int,
 ) {
     COMPACT(minWidthDp = 0, contentMaxWidthDp = null, horizontalMarginDp = 16),
@@ -32,22 +43,26 @@ enum class WindowWidthClass(
         get() = minWidthDp >= PlatformBaseline.LARGE_SCREEN_MIN_WIDTH_DP
 
     companion object {
-        /** Classifies a window width; negative widths (never laid out yet) are compact. */
+        /** Classifies a usable width; negative widths (never laid out yet) are compact. */
         fun fromWidthDp(widthDp: Int): WindowWidthClass = entries.lastOrNull { widthDp >= it.minWidthDp } ?: COMPACT
 
         /**
-         * Width the content actually gets inside a window of [windowWidthDp] after the class's margins
-         * and the content cap are applied. Never negative.
+         * Width the content actually gets inside a usable width of [usableWidthDp] after the class's
+         * margins and the pane cap are applied. Never negative.
          */
-        fun contentWidthDp(windowWidthDp: Int): Int {
-            val widthClass = fromWidthDp(windowWidthDp)
-            val available = (windowWidthDp - 2 * widthClass.horizontalMarginDp).coerceAtLeast(0)
+        fun contentWidthDp(usableWidthDp: Int): Int {
+            val widthClass = fromWidthDp(usableWidthDp)
+            val available = (usableWidthDp - 2 * widthClass.horizontalMarginDp).coerceAtLeast(0)
             return widthClass.contentMaxWidthDp?.let { minOf(available, it) } ?: available
         }
     }
 }
 
-/** The width class of the window hosting this composition, in dp, from the container size. */
+/**
+ * The width class of the **whole window** hosting this composition (insets included), from the
+ * container size. Use it for decisions about the window itself; [RootSurface] does not use it for
+ * layout, because it classifies the inset area instead.
+ */
 @Composable
 @ReadOnlyComposable
 fun currentWindowWidthClass(): WindowWidthClass {

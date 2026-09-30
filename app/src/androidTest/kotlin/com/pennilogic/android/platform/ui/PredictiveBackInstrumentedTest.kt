@@ -51,7 +51,7 @@ class PredictiveBackInstrumentedTest {
     fun handlerInterceptsSystemBackThroughThePlatformDispatcher() {
         var backs = 0
         compose.setContent {
-            PenniLogicBackHandler(onBack = { backs++ })
+            PenniLogicBackHandler(enabled = true, onBack = { backs++ })
             Box {}
         }
         compose.waitForIdle()
