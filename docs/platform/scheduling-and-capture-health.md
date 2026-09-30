@@ -53,8 +53,15 @@ Room-backed one and must pass `DurableQueueContractTest`:
   (a poison-item cap on that counter is a feature decision, not the queue's);
 - `deadLetter` **parks** an item — the server rejected it for good or `maxAttempts` completed sends
   failed — with its payload, key, attempt counts, timestamps and reason, exposed through
-  `deadLetters()`; nothing is deleted, `enqueue` keeps refusing the key, and an operator or QA can
-  inspect, re-queue or export it;
+  `deadLetters()`; the queue itself deletes nothing, `enqueue` keeps refusing the key, and an
+  operator or QA can inspect or re-queue it. Parked payloads are transaction content: they are erased
+  with the account's data through `clear()` (the storage ticket's persisted implementation, android#6,
+  owns retention), and **no export of a queued or parked item exists in this baseline** — any future
+  export names its purpose and retention first, like the `capture_health` event;
+- `clear` is the erasure operation: it removes pending, in-flight and dead-lettered items with their
+  payloads regardless of leases, so the sign-out / account-erasure flow has one call to make;
+- neither `QueuedItem` nor `DeadLetter` prints its payload from `toString()`, so a logged item or a
+  printed exception cannot carry transaction content into logcat;
 - every dead-letter and rejection reason is an identifier (`[a-z][a-z0-9_]{0,63}`), never free server
   text, so no content can enter local diagnostics through that path;
 - every operation is atomic.
@@ -151,14 +158,14 @@ fed by `CaptureSettingsProbe` (notification access, restricted-setting lock) and
 feature names — a read, never a request; this baseline declares no capture permission, so it reads as
 not granted); `clear` erases the record.
 
-**Persisted artefact and its lifecycle (erasure inventory).** `PreferencesCaptureHealthStore` writes
-the private SharedPreferences file `pennilogic.capture_health` with exactly the keys `pause_reason`,
-`paused_since`, `components_registered`, `block_reason`, `block_permission` — reason identifiers, one
-timestamp, one boolean and a platform permission name; nothing else. The file is excluded from cloud
-backup and device transfer by the application's extraction rules. It is erased by
-`CaptureHealthStore.clear()` (`CaptureHealthMonitor.clear()`), which the sign-out and account-erasure
-flow of the account ticket calls, so a `private_space_paused` indicator and its timestamp never
-outlive the account on the device; uninstall removes it as well. The in-memory store serves tests.
+**Persisted artefacts and their lifecycle (erasure inventory).**
+
+| Artefact | Content | Backup / transfer | Erasure | Export |
+| --- | --- | --- | --- | --- |
+| `pennilogic.capture_health` (private SharedPreferences, `PreferencesCaptureHealthStore`) | exactly the keys `pause_reason`, `paused_since`, `components_registered`, `block_reason`, `block_permission` — reason identifiers, one timestamp, one boolean, a platform permission name | excluded by the application's extraction rules | `CaptureHealthStore.clear()` / `CaptureHealthMonitor.clear()`, called by the sign-out and account-erasure flow of the account ticket, so a `private_space_paused` indicator and its timestamp never outlive the account; uninstall removes it too | none |
+| the durable queue — pending, in-flight and dead-lettered items (`DurableQueue`) | idempotency keys, timestamps, counts, dead-letter reason identifiers **and the opaque payloads, which are transaction content** | this baseline has only the in-memory reference implementation, which dies with the process; the storage ticket (android#6) adds the persisted (Room) form and must keep it out of backup and transfer like the record above | `DurableQueue.clear()`, called by the same sign-out / account-erasure flow; the storage ticket owns retention of the persisted form and must add its file to this table when it exists | none — no export of a queued or parked item exists in this baseline; any future export names its purpose and retention first |
+
+The in-memory stores serve tests.
 
 ## 5. Observability
 
@@ -178,7 +185,7 @@ is the device's logcat ring buffer.
 | Test | Proves | Where |
 | --- | --- | --- |
 | `StopReasonTest` | platform values, categories, dispositions, capture-health mapping | JVM, CI, both variants |
-| `DurableQueueContractTest` | queue semantics above, incl. unsent give-back counting no attempt however often, dead letters retained with payload, identifier-only reasons | JVM, CI |
+| `DurableQueueContractTest` | queue semantics above, incl. unsent give-back counting no attempt however often, dead letters retained with payload, identifier-only reasons, no payload in any `toString()`, `clear()` erasing pending, in-flight and parked items | JVM, CI |
 | `QueueDrainerTest` | quota stop mid-batch; ten stops then one transient retry (one copy, zero attempts spent); crash before and after every queue operation the drain performs, plans derived from recorded call counts and asserted to crash; crash around every send; cancellation; lease takeover; rejection and retry limits with payload retained | JVM, CI |
 | `WorkerResultMapperTest`, `QueueDrainWorkerTest` | result mapping; the real `CoroutineWorker` through `work-testing` on Robolectric SDK 36: happy path, polled quota stop (items back, no attempt spent, `stop_reason: quota`, `retry`), cancellation of the running work (`NonCancellable` give-back) | JVM/Robolectric, CI |
 | `TrackingPauseDetectorTest` | detection by the shape of the platform answers: start-info decides, `REASON_USER_STOPPED` honoured, `REASON_USER_REQUESTED` inconclusive, profile kind, restriction precedence | JVM, CI |

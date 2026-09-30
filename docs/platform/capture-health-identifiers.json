@@ -183,6 +183,14 @@
       "content": "Reason identifiers, one timestamp, one boolean and a platform permission name; never an account identifier, device identifier, package list, transaction or message content.",
       "backup": "Excluded from cloud backup and device transfer by res/xml/data_extraction_rules.xml and res/xml/backup_rules.xml (allowBackup is false).",
       "erasure": "CaptureHealthStore.clear() / CaptureHealthMonitor.clear() removes every key; the sign-out and account-erasure flow of the account ticket calls it so the record, including a private_space_paused indicator and its timestamp, does not outlive the account on the device."
+    },
+    "erasure_inventory_note": "Every artefact android persists for capture health or queued sync is listed in docs/platform/scheduling-and-capture-health.md section 4 (erasure inventory) with its content, backup exclusion, erasure call and export status; this record and the durable queue are the two entries in this baseline.",
+    "durable_queue": {
+      "contract": "DurableQueue (platform/scheduling/DurableQueue.kt); reference implementation InMemoryDurableQueue, persisted (Room) form owned by the storage ticket android#6",
+      "content": "Idempotency keys, timestamps, attempt and lease-expiry counts, dead-letter reason identifiers, and the opaque payloads of pending, in-flight and dead-lettered items, which are transaction content.",
+      "diagnostics": "QueuedItem.toString() and DeadLetter.toString() never include the payload.",
+      "erasure": "DurableQueue.clear() removes pending, in-flight and dead-lettered items with their payloads regardless of leases; the sign-out and account-erasure flow calls it. The queue itself deletes nothing else; the storage ticket owns retention of the persisted form.",
+      "export": "None: no export of a queued or parked item exists in this baseline; any future export names its purpose and retention first."
     }
   },
   "observability": {

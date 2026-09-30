@@ -125,6 +125,8 @@ class QueueDrainerTest {
         override suspend fun snapshot(): QueueSnapshot = delegate.snapshot()
 
         override suspend fun deadLetters(): List<DeadLetter<T>> = delegate.deadLetters()
+
+        override suspend fun clear() = delegate.clear()
     }
 
     /** A first drain shaped so that a given set of queue operations is reached, and what it must leave behind. */

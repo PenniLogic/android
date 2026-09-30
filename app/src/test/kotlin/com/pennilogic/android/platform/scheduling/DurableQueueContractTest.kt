@@ -3,6 +3,7 @@ package com.pennilogic.android.platform.scheduling
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -103,7 +104,7 @@ class DurableQueueContractTest {
         }
 
     @Test
-    fun `a dead-lettered item is parked with its payload, counts and reason, never deleted`() =
+    fun `a dead-lettered item is parked with its payload, counts and reason until clear`() =
         runTest {
             queue.enqueue("k1", "payload-1", nowMillis = 1)
             queue.claim("A", 10, nowMillis = 2, leaseMillis = 100)
@@ -124,6 +125,48 @@ class DurableQueueContractTest {
             assertTrue("no longer live", snapshot.isEmpty)
             assertFalse("its key stays refused", queue.enqueue("k1", "again", nowMillis = 5))
             assertFalse("a dead letter is not leased again", queue.claim("B", 10, 6, 100).any { it.key == "k1" })
+        }
+
+    @Test
+    fun `no item or dead letter ever prints its payload`() =
+        runTest {
+            val payload = "{\"amount_minor\":123400,\"merchant\":\"ACME\"}"
+            queue.enqueue("txn-1", payload, nowMillis = 1)
+            val item = queue.claim("A", 10, nowMillis = 2, leaseMillis = 100).single()
+            assertEquals(payload, item.payload)
+            assertFalse("item: $item", item.toString().contains("123400") || item.toString().contains("ACME"))
+            assertTrue(item.toString().contains("txn-1"))
+            assertTrue(queue.deadLetter("txn-1", "A", "schema", nowMillis = 3))
+            val parked = queue.deadLetters().single()
+            assertEquals(payload, parked.item.payload)
+            val printed = parked.toString()
+            assertFalse("dead letter: $printed", printed.contains("123400") || printed.contains("ACME"))
+            assertTrue(printed.contains("schema") && printed.contains("txn-1"))
+            val plan = SendResult.Rejected("schema")
+            assertFalse(plan.toString().contains("ACME"))
+        }
+
+    @Test
+    fun `clear erases pending, in-flight and dead-lettered items with their payloads`() =
+        runTest {
+            queue.enqueue("pending", "p", 1)
+            queue.enqueue("flying", "f", 1)
+            queue.enqueue("parked", "d", 1)
+            queue.claim("A", 1, 2, 100)
+            val second = queue.claim("A", 1, 2, 100).single()
+            queue.deadLetter(second.key, "A", "schema", nowMillis = 3)
+            assertEquals(setOf("parked"), queue.snapshot().pending)
+            assertEquals(setOf("pending"), queue.snapshot().inFlight)
+            assertEquals(setOf("flying"), queue.snapshot().deadLettered)
+
+            queue.clear()
+
+            val snapshot = queue.snapshot()
+            assertEquals(QueueSnapshot(emptySet(), emptySet(), emptySet()), snapshot)
+            assertEquals(emptyList<DeadLetter<String>>(), queue.deadLetters())
+            assertNull(queue.deadLetterReason("flying"))
+            assertFalse("the old lease is gone with the item", queue.ack("pending", "A"))
+            assertTrue("keys are free again after erasure", queue.enqueue("flying", "again", nowMillis = 4))
         }
 
     @Test

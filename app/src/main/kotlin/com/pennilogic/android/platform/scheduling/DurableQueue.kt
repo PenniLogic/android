@@ -23,7 +23,11 @@ data class QueuedItem<T>(
      * this counter is the feature ticket's policy, not the queue's.
      */
     val leaseExpiries: Int = 0,
-)
+) {
+    /** Never includes the payload: a logged item or a printed exception must not carry transaction content. */
+    override fun toString(): String =
+        "QueuedItem(key=$key, enqueuedAt=$enqueuedAtMillis, attempts=$attempts, leaseExpiries=$leaseExpiries)"
+}
 
 /** Outcome of one send attempt, as the sender reports it. */
 sealed interface SendResult {
@@ -50,15 +54,19 @@ sealed interface SendResult {
 }
 
 /**
- * A dead-lettered item: parked, not deleted. The item keeps its payload, key, attempt counts and
- * timestamps so an operator or QA can inspect, re-queue or export it; [DurableQueue.enqueue] still
- * refuses its key.
+ * A dead-lettered item: parked, not deleted by the queue itself. The item keeps its payload, key,
+ * attempt counts and timestamps so an operator or QA can inspect or re-queue it; [DurableQueue.enqueue]
+ * still refuses its key. Its lifecycle is the queue's: [DurableQueue.clear] erases it with the rest
+ * of the account's data, and no export of a dead letter exists in this baseline.
  */
 data class DeadLetter<T>(
     val item: QueuedItem<T>,
     val reason: String,
     val deadLetteredAtMillis: Long,
-)
+) {
+    /** Never includes the payload; [QueuedItem.toString] already omits it. */
+    override fun toString(): String = "DeadLetter(item=$item, reason=$reason, deadLetteredAt=$deadLetteredAtMillis)"
+}
 
 /** Keys by state; the queue's own view, used by tests and diagnostics. */
 data class QueueSnapshot(
@@ -81,8 +89,11 @@ data class QueueSnapshot(
  * records a failed send attempt, so platform stops can never exhaust the attempt limit; a lease that
  * outlives its owner (crash, quota stop mid-send) is returned to pending by [expireLeases], which
  * counts a lease expiry and not an attempt, so a crash at any point loses nothing and the same key is
- * re-sent, which the server deduplicates; a dead-lettered item is retained with its payload, never
- * deleted. Every operation is atomic: it either fully applies or leaves the queue unchanged.
+ * re-sent, which the server deduplicates; a dead-lettered item is retained with its payload and is not
+ * deleted by the queue itself — [clear] is the one erasure path, called by the sign-out /
+ * account-erasure flow, and the storage ticket's persisted implementation owns retention (no export of
+ * queued or parked payloads exists in this baseline). Every operation is atomic: it either fully
+ * applies or leaves the queue unchanged.
  */
 interface DurableQueue<T> {
     /** Adds an item; false when the key is already queued, in flight or dead-lettered (never a second copy). */
@@ -127,8 +138,8 @@ interface DurableQueue<T> {
 
     /**
      * Parks an item the server rejected for good, or that exhausted its attempts, with its payload,
-     * [reason] (an identifier matching [REASON]) and [nowMillis]; the item leaves the live queue but is
-     * never deleted. False when [owner] has no lease.
+     * [reason] (an identifier matching [REASON]) and [nowMillis]; the item leaves the live queue and is
+     * kept until [clear]. False when [owner] has no lease.
      */
     suspend fun deadLetter(
         key: String,
@@ -144,6 +155,13 @@ interface DurableQueue<T> {
 
     /** Every dead-lettered item, oldest first, with payload and reason. */
     suspend fun deadLetters(): List<DeadLetter<T>>
+
+    /**
+     * Erases everything — pending, in-flight and dead-lettered items, payloads included — regardless of
+     * leases. The erasure path of the account's queued and parked transaction content (sign-out,
+     * account erasure); a following [snapshot] is empty and [deadLetters] returns nothing.
+     */
+    suspend fun clear()
 
     companion object {
         /** Shape of every dead-letter and rejection reason: an identifier, never free text. */
@@ -292,6 +310,12 @@ class InMemoryDurableQueue<T> : DurableQueue<T> {
         }
 
     override suspend fun deadLetters(): List<DeadLetter<T>> = mutex.withLock { dead.values.toList() }
+
+    override suspend fun clear() =
+        mutex.withLock {
+            live.clear()
+            dead.clear()
+        }
 
     /** The recorded reason of a dead-lettered key, for diagnostics. */
     suspend fun deadLetterReason(key: String): String? = mutex.withLock { dead[key]?.reason }
