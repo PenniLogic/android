@@ -11,7 +11,16 @@ Usage (from a clean clone, JDK 21 and Android SDK 36 present, nothing else confi
 
 Each gate appends a JSON record to build/quality-metrics.json (build duration, unit test count,
 lint violation count) and, when GITHUB_STEP_SUMMARY is set, a Markdown table to that file.
-The exit code is the Gradle exit code; nothing is skipped or downgraded.
+The exit code is the Gradle exit code, or 1 when a green Gradle run is refused as evidence (below);
+nothing is skipped or downgraded.
+
+Unit-test results count as evidence only when the current run produced them (android#69). The
+build cache is enabled in gradle.properties and the JUnit XML files are declared task outputs, so a
+FROM-CACHE or UP-TO-DATE unit-test task restores a full green count without running a test. Every
+unit-test task is therefore invoked with Gradle's `--rerun` task option, and the captured plain
+console must show it executed: a FROM-CACHE, UP-TO-DATE, NO-SOURCE or SKIPPED outcome, or a task
+Gradle never reported, fails the gate even when Gradle exits 0. `self-test` plants an up-to-date
+run and a cached run and proves the gate refuses both.
 """
 
 from __future__ import annotations
@@ -19,13 +28,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ElementTree
+from collections.abc import Iterable
 from pathlib import Path
+from typing import NamedTuple
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app"
@@ -36,9 +48,24 @@ GATES: dict[str, tuple[str, ...]] = {
     "build": ("assembleDebug", "assembleRelease"),
     "test": ("testDebugUnitTest", "testReleaseUnitTest"),
     "lint": ("lintDebug", "lintRelease", "spotlessCheck"),
-    "coverage": ("createDebugUnitTestCoverageReport",),
+    # The report task alone would accept an up-to-date or cached testDebugUnitTest; naming the test
+    # task lets --rerun force it and lets the console check see its outcome.
+    "coverage": ("testDebugUnitTest", "createDebugUnitTestCoverageReport"),
 }
 ORDER = ("build", "test", "lint", "coverage")
+
+# Tasks whose JUnit XML the gates consume as evidence. They are forced with --rerun and their
+# console outcome is checked; anything but an execution (which prints a header without a label,
+# plus FAILED when it fails) is refused, including labels this script does not know.
+UNIT_TEST_TASKS = ("testDebugUnitTest", "testReleaseUnitTest")
+EXECUTED = "executed"
+NOT_RUN = "not run"
+EXECUTED_LABELS = (EXECUTED, "FAILED")
+REUSED_LABELS = ("FROM-CACHE", "UP-TO-DATE", "NO-SOURCE", "SKIPPED")
+# `> Task :app:testDebugUnitTest FROM-CACHE`; an executed task prints `> Task :app:testDebugUnitTest`,
+# possibly several times when its output interleaves with another task's under parallel execution.
+TASK_HEADER = re.compile(r"^> Task (?P<path>:\S+?)(?: (?P<label>[A-Z][A-Z-]*))?\s*$", re.MULTILINE)
+UNIT_TEST_OUTPUTS = ("build/test-results/test{variant}UnitTest", "build/reports/tests/test{variant}UnitTest")
 
 # Planted defects for the self-test. Each one must make exactly the named gate fail.
 FAILING_TEST = APP / "src/test/kotlin/com/pennilogic/android/PlantedFailingTest.kt"
@@ -70,12 +97,99 @@ def gradle_command() -> list[str]:
     return [str(wrapper)]
 
 
-def run_gradle(tasks: tuple[str, ...], extra: tuple[str, ...] = ()) -> tuple[int, float]:
-    command = gradle_command() + list(tasks) + list(COMMON_ARGS) + list(extra)
+class GradleRun(NamedTuple):
+    exit_code: int
+    duration_seconds: float
+    console: str
+
+
+def gradle_arguments(
+    tasks: tuple[str, ...],
+    extra: tuple[str, ...] = (),
+    force_unit_tests: bool = True,
+) -> list[str]:
+    """The wrapper command line. Every unit-test task carries the `--rerun` task option so Gradle can
+    neither call it up-to-date nor restore it from the build cache; only the self-test switches that
+    off to plant a reused run."""
+    arguments = gradle_command()
+    for task in tasks:
+        arguments.append(task)
+        if force_unit_tests and task in UNIT_TEST_TASKS:
+            arguments.append("--rerun")
+    return arguments + list(COMMON_ARGS) + list(extra)
+
+
+def run_gradle(
+    tasks: tuple[str, ...],
+    extra: tuple[str, ...] = (),
+    force_unit_tests: bool = True,
+) -> GradleRun:
+    """Run the wrapper, stream its output and keep the console so task outcomes can be checked."""
+    command = gradle_arguments(tasks, extra, force_unit_tests)
     print("$", " ".join(command), flush=True)
     started = time.monotonic()
-    completed = subprocess.run(command, cwd=ROOT, check=False)
-    return completed.returncode, round(time.monotonic() - started, 3)
+    lines: list[str] = []
+    with subprocess.Popen(
+        command,
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    ) as process:
+        assert process.stdout is not None
+        try:
+            for line in process.stdout:
+                print(line, end="", flush=True)
+                lines.append(line)
+        except BaseException:
+            # Same contract as subprocess.run: an interrupted gate does not leave Gradle running.
+            process.kill()
+            raise
+    return GradleRun(process.returncode, round(time.monotonic() - started, 3), "".join(lines))
+
+
+def task_labels(console: str) -> dict[str, list[str]]:
+    """Every label Gradle's plain console printed per task path, in order; a header without a label
+    is recorded as `executed`."""
+    labels: dict[str, list[str]] = {}
+    for match in TASK_HEADER.finditer(console):
+        labels.setdefault(match["path"], []).append(match["label"] or EXECUTED)
+    return labels
+
+
+def unit_test_outcomes(console: str, tasks: Iterable[str]) -> dict[str, str]:
+    """One verdict per unit-test task in [tasks]: `executed`, the first label that is not an
+    execution (FROM-CACHE, UP-TO-DATE, ...), or `not run` when Gradle never reported the task."""
+    labels = task_labels(console)
+    verdicts: dict[str, str] = {}
+    for task in tasks:
+        if task not in UNIT_TEST_TASKS:
+            continue
+        seen = [label for path, path_labels in labels.items() if path.endswith(f":{task}") for label in path_labels]
+        reused = [label for label in seen if label not in EXECUTED_LABELS]
+        verdicts[task] = reused[0] if reused else (EXECUTED if seen else NOT_RUN)
+    return verdicts
+
+
+def refused_unit_tests(verdicts: dict[str, str]) -> dict[str, str]:
+    """The unit-test tasks whose results the current run did not produce."""
+    return {task: verdict for task, verdict in verdicts.items() if verdict != EXECUTED}
+
+
+def gate_exit_code(gradle_exit_code: int, verdicts: dict[str, str]) -> int:
+    """Gradle's exit code, or 1 when Gradle was green but a consumed unit-test result was reused."""
+    if gradle_exit_code:
+        return gradle_exit_code
+    return 1 if refused_unit_tests(verdicts) else 0
+
+
+def refusal(verdicts: dict[str, str]) -> str:
+    refused = refused_unit_tests(verdicts)
+    return "unit-test results were not produced by this run: " + ", ".join(
+        f"{task} {verdict}" for task, verdict in refused.items()
+    )
 
 
 def count_unit_tests(variant: str) -> dict[str, int]:
@@ -121,14 +235,20 @@ def coverage_summary() -> dict[str, dict[str, int]]:
     return summary
 
 
-def collect_metrics(gate: str, exit_code: int, duration: float) -> dict[str, object]:
+def collect_metrics(gate: str, run: GradleRun) -> dict[str, object]:
     metrics: dict[str, object] = {
         "gate": gate,
-        "exit_code": exit_code,
-        "duration_seconds": duration,
+        "exit_code": run.exit_code,
+        "duration_seconds": run.duration_seconds,
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     if gate in {"test", "coverage"}:
+        verdicts = unit_test_outcomes(run.console, GATES[gate])
+        metrics["exit_code"] = gate_exit_code(run.exit_code, verdicts)
+        if refused_unit_tests(verdicts):
+            metrics["gradle_exit_code"] = run.exit_code
+            metrics["refused"] = refusal(verdicts)
+        metrics["unit_test_tasks"] = verdicts
         metrics["unit_tests"] = {
             "debug": count_unit_tests("Debug"),
             "release": count_unit_tests("Release") if gate == "test" else None,
@@ -160,6 +280,11 @@ def markdown_summary(metrics: dict[str, object]) -> str:
         f"| exit code | {metrics['exit_code']} |",
         f"| duration (s) | {metrics['duration_seconds']} |",
     ]
+    if "refused" in metrics:
+        rows.append(f"| refused | {metrics['refused']} |")
+    unit_test_tasks = metrics.get("unit_test_tasks")
+    if isinstance(unit_test_tasks, dict):
+        rows.append(f"| unit test tasks | {json.dumps(unit_test_tasks)} |")
     unit_tests = metrics.get("unit_tests")
     if isinstance(unit_tests, dict):
         for variant, totals in unit_tests.items():
@@ -173,8 +298,10 @@ def markdown_summary(metrics: dict[str, object]) -> str:
 
 
 def run_gate(gate: str) -> int:
-    exit_code, duration = run_gradle(GATES[gate])
-    publish(collect_metrics(gate, exit_code, duration))
+    metrics = collect_metrics(gate, run_gradle(GATES[gate]))
+    publish(metrics)
+    exit_code = metrics["exit_code"]
+    assert isinstance(exit_code, int)
     return exit_code
 
 
@@ -186,20 +313,79 @@ def plant(path: Path, source: str) -> None:
 
 
 def self_test_case(name: str, path: Path, source: str, tasks: tuple[str, ...], expect_output: Path | None) -> dict:
-    """Plant one defect, run the gate, remove the defect, and report whether the gate failed."""
+    """Plant one defect, run the gate, remove the defect, and report whether the gate failed.
+
+    A planted unit-test failure counts only when the unit-test task executed in this run: a failure
+    that comes from an earlier stage (compilation, configuration) is not the test gate biting.
+    """
     plant(path, source)
     try:
-        exit_code, duration = run_gradle(tasks)
+        run = run_gradle(tasks)
     finally:
         path.unlink(missing_ok=True)
-    outcome = {"case": name, "exit_code": exit_code, "duration_seconds": duration, "failed_as_expected": exit_code != 0}
+    outcome = {
+        "case": name,
+        "exit_code": run.exit_code,
+        "duration_seconds": run.duration_seconds,
+        "failed_as_expected": run.exit_code != 0,
+    }
+    verdicts = unit_test_outcomes(run.console, tasks)
+    if verdicts:
+        outcome["unit_test_tasks"] = verdicts
+        outcome["unit_tests_executed"] = not refused_unit_tests(verdicts)
+        outcome["failed_as_expected"] = outcome["failed_as_expected"] and outcome["unit_tests_executed"]
     if expect_output is not None:
         outcome["report_present"] = expect_output.is_file()
     return outcome
 
 
+def remove_unit_test_outputs(variant: str) -> None:
+    """Delete the declared outputs of one unit-test task so Gradle cannot call it up-to-date; the
+    build-cache entry for the same inputs survives, which is what the FROM-CACHE case plants. A
+    directory that cannot be removed raises, so a locked file cannot masquerade as UP-TO-DATE."""
+    for relative in UNIT_TEST_OUTPUTS:
+        outputs = APP / relative.format(variant=variant)
+        if outputs.exists():
+            shutil.rmtree(outputs)
+
+
+def reused_results_case(name: str, expected_outcome: str, clean_outputs: bool, extra: tuple[str, ...] = ()) -> dict:
+    """Plant a reused unit-test run and require the gate to refuse it.
+
+    The debug unit-test task is invoked without `--rerun` right after a run that executed it on the
+    same tree. With the outputs left in place Gradle reports UP-TO-DATE; with `clean_outputs` the
+    outputs are deleted first, so the only reuse left is a build-cache hit (`--build-cache` is passed
+    in [extra] so the case also holds when caching is switched off in the environment). A cold cache
+    executes the tests once and stores them, so one more round is allowed to reach FROM-CACHE. Gradle
+    exits 0 in both plants; the case passes only when the gate's exit code is not 0 and the observed
+    outcome is the planted one.
+    """
+    rounds: list[dict] = []
+    while True:
+        if clean_outputs:
+            remove_unit_test_outputs("Debug")
+        run = run_gradle(("testDebugUnitTest",), extra, force_unit_tests=False)
+        verdict = unit_test_outcomes(run.console, ("testDebugUnitTest",))["testDebugUnitTest"]
+        rounds.append({"gradle_exit_code": run.exit_code, "duration_seconds": run.duration_seconds, "outcome": verdict})
+        # A cold cache executes the tests once and stores them; the next round must then restore them.
+        if verdict != EXECUTED or not clean_outputs or len(rounds) == 2:
+            break
+    exit_code = gate_exit_code(run.exit_code, {"testDebugUnitTest": verdict})
+    return {
+        "case": name,
+        "exit_code": exit_code,
+        "gradle_exit_code": run.exit_code,
+        "duration_seconds": round(sum(r["duration_seconds"] for r in rounds), 3),
+        "expected_outcome": expected_outcome,
+        "observed_outcome": verdict,
+        "rounds": rounds,
+        "failed_as_expected": run.exit_code == 0 and exit_code != 0 and verdict == expected_outcome,
+    }
+
+
 def self_test() -> int:
-    """Assert that each gate fails on a planted defect and passes again once it is removed."""
+    """Assert that each gate fails on a planted defect and passes again once it is removed, and that
+    the unit-test gate refuses results it did not produce."""
     if any(path.exists() for path in (FAILING_TEST, FORMAT_VIOLATION, LINT_VIOLATION)):
         print("self-test: planted-defect paths already exist; remove them first", file=sys.stderr)
         return 2
@@ -238,25 +424,43 @@ def self_test() -> int:
     if results[2].get("report_present"):
         results[2]["lint_issue_counts"] = count_lint_issues("debug")
 
-    recovery_code, recovery_duration = run_gradle(("testDebugUnitTest", "spotlessCheck", "lintDebug"))
-    report = {
-        "gate": "self-test",
-        "cases": results,
-        "recovery": {"exit_code": recovery_code, "duration_seconds": recovery_duration},
+    recovery_run = run_gradle(("testDebugUnitTest", "spotlessCheck", "lintDebug"))
+    recovery_verdicts = unit_test_outcomes(recovery_run.console, ("testDebugUnitTest",))
+    recovery: dict[str, object] = {
+        "exit_code": gate_exit_code(recovery_run.exit_code, recovery_verdicts),
+        "gradle_exit_code": recovery_run.exit_code,
+        "duration_seconds": recovery_run.duration_seconds,
+        "unit_test_tasks": recovery_verdicts,
     }
-    passed = all(case["failed_as_expected"] for case in results) and recovery_code == 0
+    if refused_unit_tests(recovery_verdicts):
+        recovery["refused"] = refusal(recovery_verdicts)
+    # The recovery run has just executed the debug unit tests on the clean tree: replaying the task
+    # without --rerun is up-to-date, and replaying it after deleting its outputs is a build-cache hit.
+    results.append(reused_results_case("up-to-date unit-test results are refused", "UP-TO-DATE", clean_outputs=False))
+    results.append(
+        reused_results_case("cached unit-test results are refused", "FROM-CACHE", clean_outputs=True, extra=("--build-cache",)),
+    )
+    report: dict[str, object] = {"gate": "self-test", "cases": results, "recovery": recovery}
+    passed = all(case["failed_as_expected"] for case in results) and recovery["exit_code"] == 0
     passed = passed and planted_test_result.get("planted_test_counted_not_skipped", False)
     report["passed"] = passed
     report["exit_code"] = 0 if passed else 1
-    report["duration_seconds"] = round(sum(c["duration_seconds"] for c in results) + recovery_duration, 3)
+    report["duration_seconds"] = round(
+        sum(c["duration_seconds"] for c in results) + recovery_run.duration_seconds,
+        3,
+    )
     publish(report)
-    return report["exit_code"]
+    return 0 if passed else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("gate", choices=[*ORDER, "all", "self-test"])
     args = parser.parse_args(argv)
+    # Gradle's console is re-emitted line by line; a redirected stdout must not choke on it.
+    reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if reconfigure is not None:
+        reconfigure(errors="replace")
     if args.gate == "self-test":
         return self_test()
     gates = ORDER if args.gate == "all" else (args.gate,)

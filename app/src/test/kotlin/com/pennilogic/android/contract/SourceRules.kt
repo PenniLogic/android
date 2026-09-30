@@ -34,7 +34,8 @@ object SourceRules {
     /**
      * Direct back registration, by import (form-independent) and by receiver-less call as a second
      * net; both forms of the Kotlin call (`BackHandler(...)` and the trailing lambda `BackHandler {`)
-     * are matched.
+     * are matched, and so is the fully qualified form that needs no import
+     * (`androidx.activity.compose.BackHandler(...) {`, #66 core review F7).
      */
     private val directBackImports =
         Regex(
@@ -48,6 +49,10 @@ object SourceRules {
         listOf(
             Regex("""(?<![A-Za-z0-9_.])PredictiveBackHandler\s*[({]"""),
             Regex("""(?<![A-Za-z0-9_.])BackHandler\s*[({]"""),
+            Regex(
+                """\b(androidx\.activity\.compose\.(Predictive)?BackHandler|""" +
+                    """androidx\.activity\.OnBackPressedCallback|android\.window\.OnBackInvokedCallback)\s*[({]""",
+            ),
             Regex("""\baddCallback\s*\("""),
             Regex("""\bregisterOnBackInvokedCallback\s*\("""),
         )

@@ -45,6 +45,38 @@ class SourceRulesSelfTest {
     }
 
     @Test
+    fun `a fully qualified back registration without an import is caught by the call net`() {
+        // #66 core review F7: no import line, so only the call net can see it.
+        val fullyQualified =
+            "fun bind(view: ComposeView) { view.setContent { " +
+                "androidx.activity.compose.BackHandler(enabled = true) { finish() }; RootSurface { } } }"
+        assertEquals(setOf("direct back registration"), rulesFor("ui/Screen.kt" to fullyQualified))
+        val trailingLambda = "@Composable fun Screen() { androidx.activity.compose.BackHandler { finish() } }"
+        assertEquals(setOf("direct back registration"), rulesFor("ui/Screen.kt" to trailingLambda))
+        val predictive =
+            "@Composable fun Screen() { androidx.activity.compose.PredictiveBackHandler(true) { progress -> } }"
+        assertEquals(setOf("direct back registration"), rulesFor("ui/Screen.kt" to predictive))
+        val callback =
+            "val callback = object : androidx.activity.OnBackPressedCallback(true) { " +
+                "override fun handleOnBackPressed() {} }"
+        assertEquals(setOf("direct back registration"), rulesFor("ui/Screen.kt" to callback))
+        val invoked = "val callback = android.window.OnBackInvokedCallback { finish() }"
+        assertEquals(setOf("direct back registration"), rulesFor("ui/Screen.kt" to invoked))
+        assertEquals(
+            "the primitive itself may use the fully qualified form",
+            emptySet<String>(),
+            rulesFor(SourceRules.PREDICTIVE_BACK_FILE to predictive),
+        )
+        assertEquals(
+            "a comment naming the fully qualified form is not a registration",
+            emptySet<String>(),
+            rulesFor(
+                "ui/Screen.kt" to "/** never androidx.activity.compose.BackHandler(enabled = true) { } */ class X",
+            ),
+        )
+    }
+
+    @Test
     fun `direct back imports are caught form-independently, except in the primitive itself`() {
         for (
         import in
