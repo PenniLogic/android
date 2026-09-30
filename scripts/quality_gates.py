@@ -127,30 +127,44 @@ def run_gradle(
     extra: tuple[str, ...] = (),
     force_unit_tests: bool = True,
 ) -> GradleRun:
-    """Run the wrapper, stream its output and keep the console so task outcomes can be checked."""
+    """Stream the wrapper and retain its console. Windows owns the tree before execution and
+    confirms native exits and pipe release before returning or propagating an interruption.
+    An unconfirmed Windows shutdown raises an unsafe error; callers must preserve its fixtures."""
     command = gradle_arguments(tasks, extra, force_unit_tests)
     print("$", " ".join(command), flush=True)
     started = time.monotonic()
     lines: list[str] = []
-    with subprocess.Popen(
-        command,
-        cwd=ROOT,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    ) as process:
-        assert process.stdout is not None
-        try:
-            for line in process.stdout:
-                print(line, end="", flush=True)
-                lines.append(line)
-        except BaseException:
-            # Same contract as subprocess.run: an interrupted gate does not leave Gradle running.
-            process.kill()
-            raise
-    return GradleRun(process.returncode, round(time.monotonic() - started, 3), "".join(lines))
+
+    def consume(line: str) -> None:
+        print(line, end="", flush=True)
+        lines.append(line)
+
+    if os.name == "nt":
+        if __package__:
+            from .windows_processes import run_command
+        else:
+            from windows_processes import run_command
+
+        exit_code = run_command(command, ROOT, consume)
+    else:
+        with subprocess.Popen(
+            command,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        ) as process:
+            assert process.stdout is not None
+            try:
+                for line in process.stdout:
+                    consume(line)
+            except BaseException:
+                process.kill()
+                raise
+        exit_code = process.returncode
+    return GradleRun(exit_code, round(time.monotonic() - started, 3), "".join(lines))
 
 
 def task_labels(console: str) -> dict[str, list[str]]:
@@ -324,11 +338,22 @@ def self_test_case(name: str, path: Path, source: str, tasks: tuple[str, ...], e
     A planted unit-test failure counts only when the unit-test task executed in this run: a failure
     that comes from an earlier stage (compilation, configuration) is not the test gate biting.
     """
+    if __package__:
+        from .windows_processes import UnsafeProcessTreeError
+    else:
+        from windows_processes import UnsafeProcessTreeError
+
     plant(path, source)
+    restoration_safe = True
     try:
         run = run_gradle(tasks)
+    except UnsafeProcessTreeError as error:
+        restoration_safe = False
+        error.retain_fixture(path)
+        raise
     finally:
-        path.unlink(missing_ok=True)
+        if restoration_safe:
+            path.unlink(missing_ok=True)
     outcome = {
         "case": name,
         "exit_code": run.exit_code,

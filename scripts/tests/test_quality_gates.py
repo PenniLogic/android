@@ -682,6 +682,22 @@ class QualityGatesTest(unittest.TestCase):
         self.assertGreaterEqual(run.duration_seconds, 0.0)
 
     def test_run_gradle_kills_the_wrapper_when_the_console_consumer_is_interrupted(self) -> None:
+        if os.name == "nt":
+            from windows_process_support import finite_scenario
+
+            result = finite_scenario("interrupt")
+            self.assertTrue(result["keyboard_interrupt_preserved"])
+            self.assertTrue(result["child_alive_at_callback"], "the child acknowledged startup before interruption")
+            self.assertTrue(result["process_ids_creation_times_retained"])
+            self.assertTrue(result["root_signaled_before_source_return"])
+            self.assertTrue(result["child_signaled_before_source_return"])
+            self.assertEqual(1, result["child_native_exit_code_at_return"], "the child was killed, not awaited naturally")
+            self.assertTrue(result["source_read_pipe_closed"])
+            self.assertTrue(result["source_control_pipe_closed"])
+            self.assertTrue(result["source_process_handle_closed"])
+            self.assertEqual({"removed": True}, result["held_file_removal"])
+            return
+
         # The same contract subprocess.run had: an interrupted gate does not leave Gradle running. The
         # interrupt is raised from the console consumer (print) while the wrapper is still alive.
         self.stand_in_wrapper(["> Task :app:testDebugUnitTest", "BUILD SUCCESSFUL in 1s"], 0)
