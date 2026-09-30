@@ -17,8 +17,9 @@ of the ticket has a row.
   default-on predictive back, ignored large-screen restrictions and job-quota changes.
 - **Status.** `implemented` means code in this repository handles the behaviour and the evidence
   column names the tests that prove it; `documented` means the baseline records the behaviour and a
-  feature ticket will act on it; `planned_pr2` means the reusable primitive lands in the second pull
-  request of android#57 (`android-57-compat-primitives`), which flips the status.
+  feature ticket will act on it. The scheduling, capture-health and Play Integrity rows were
+  `planned_pr2` until the second pull request of android#57 (`android-57-compat-primitives`) landed
+  their primitives.
 - **Governed devices.** Only API 31 and API 36 emulators exist on the developer machine
   (`Pixel_5_API31`, `Pixel_8_API36`); CI has no emulator. JVM and Robolectric tests run in CI for
   both variants; instrumented tests run locally on the API 36 emulator and their output is attached
@@ -33,13 +34,13 @@ of the ticket has a row.
 | [`predictive_back`](#predictive-back) | ui | `implemented` | — |
 | [`large_screen_restrictions_ignored`](#large-screen-restrictions-ignored) | ui | `implemented` | — |
 | [`restricted_settings`](#restricted-settings) | settings | `implemented` | `capture_blocked_by_setting` |
-| [`job_quota_and_stop_reasons`](#job-quota-and-stop-reasons) | scheduling | `planned_pr2` | — |
-| [`standby_buckets`](#standby-buckets) | scheduling | `planned_pr2` | `capture_paused_by_platform` |
-| [`force_stop_detection`](#force-stop-detection) | capture_health | `planned_pr2` | `capture_paused_by_platform` |
-| [`private_space`](#private-space) | capture_health | `planned_pr2` | `capture_paused_by_platform` |
+| [`job_quota_and_stop_reasons`](#job-quota-and-stop-reasons) | scheduling | `implemented` | — |
+| [`standby_buckets`](#standby-buckets) | scheduling | `implemented` | `capture_paused_by_platform` |
+| [`force_stop_detection`](#force-stop-detection) | capture_health | `implemented` | `capture_paused_by_platform` |
+| [`private_space`](#private-space) | capture_health | `implemented` | `capture_paused_by_platform` |
 | [`notification_runtime_permission`](#notification-runtime-permission) | settings | `documented` | — |
 | [`developer_verification`](#developer-verification) | distribution | `implemented` | — |
-| [`play_integrity_standard_requests`](#play-integrity-standard-requests) | security | `planned_pr2` | — |
+| [`play_integrity_standard_requests`](#play-integrity-standard-requests) | security | `implemented` | — |
 | [`pending_intents_cancelled_on_stop`](#pending-intents-cancelled-on-stop) | capture_health | `documented` | `capture_paused_by_platform` |
 
 ### `edge_to_edge`
@@ -142,11 +143,14 @@ JobScheduler and WorkManager stop jobs for quota, standby and timeout reasons th
 | 35 | JobScheduler.getPendingJobReason(jobId) explains why a job is pending. |
 | 36 | Runtime quota also applies to jobs started in the top state and to jobs running alongside a foreground service; active-bucket apps get a generous but enforced quota; abandoned jobs receive STOP_REASON_TIMEOUT_ABANDONED; getPendingJobReasons(jobId) and getPendingJobReasonsHistory(jobId) list every reason. |
 
-**App handling.** PR 2 adds the StopReason model over the JobParameters/WorkInfo constants, the standby-bucket model and a DurableQueue drain primitive that releases in-flight items on a quota stop so nothing is lost or duplicated; the capture pipeline stays a listener, so a quota stop never pauses capture.
+**App handling.** StopReason models the JobParameters/WorkInfo constants including STOP_REASON_TIMEOUT_ABANDONED; StopReasonPolicy maps each category to a disposition that always releases claimed items; QueueDrainer drains a DurableQueue in leased batches, polls the stop signal before every claim and send, releases unsent items on a stop or cancellation and acknowledges only confirmed sends, so a quota stop neither loses nor duplicates queued work; QueueDrainWorker is the WorkManager base worker that reads ListenableWorker.getStopReason() (API 31+) and logs the capture_health event. Capture stays a listener, so a quota stop never pauses capture.
 
 **Evidence.**
 
-- Planned: quota stop and queue durability tests (JVM, CI) in PR 2
+- StopReasonTest: platform values, categories, dispositions (JVM, CI, both variants)
+- DurableQueueContractTest: at most one copy per key, leases, owner-checked ack/release, lease expiry (JVM, CI)
+- QueueDrainerTest: quota stop mid-batch, crash before/after every claim/ack/expireLeases and every send, cancellation mid-send, lease takeover, rejection and retry limits: every item applied exactly once, queue empty (JVM, CI)
+- WorkerResultMapperTest and QueueDrainWorkerTest: result mapping never fails a chain; real CoroutineWorker run through work-testing on Robolectric SDK 36 (CI)
 
 Source: https://developer.android.com/about/versions/16/behavior-changes-all
 
@@ -161,11 +165,13 @@ The app standby bucket bounds how often background work runs.
 | 35 | Same as 31. |
 | 36 | Same buckets; in addition Android 16 enforces a runtime quota even in the active bucket. |
 
-**App handling.** PR 2 maps STANDBY_BUCKET_RESTRICTED to the capture-health reason standby_bucket_restricted (capture_paused_by_platform -> degraded) and records the bucket in the capture_health event.
+**App handling.** StandbyBucket mirrors UsageStatsManager (hidden buckets map to unknown with the raw value kept); StopReasonPolicy.captureHealthReason maps the restricted bucket to standby_bucket_restricted (capture_paused_by_platform -> degraded) and a quota stop to no capture pause; TrackingPauseDetector reads the bucket at start; the bucket travels in the capture_health event.
 
 **Evidence.**
 
-- Planned: standby-bucket handling tests (JVM, CI) in PR 2
+- StopReasonTest: standby buckets mirror UsageStatsManager and only restricted pauses capture (JVM, CI)
+- TrackingPauseDetectorTest: restricted bucket pauses, rare does not (JVM, CI)
+- CaptureHealthMonitorTest: the event reflects the bucket (JVM, CI)
 
 Source: https://developer.android.com/topic/performance/appstandby
 
@@ -180,11 +186,13 @@ A force-stopped app must show tracking paused until capture health is restored.
 | 35 | ApplicationStartInfo.wasForceStopped() reports the first start after a force-stop; entering the stopped state also cancels all pending intents. |
 | 36 | Same as 35; ApplicationStartInfo.getStartComponent() distinguishes what started the process. |
 
-**App handling.** PR 2 adds TrackingPauseDetector (wasForceStopped on 35+, ApplicationExitInfo fallback on 30-34) and CaptureHealthMonitor, which keeps capture_paused_by_platform / force_stopped until the capture components are registered again and a health probe succeeds.
+**App handling.** TrackingPauseDetector: ApplicationStartInfo.wasForceStopped() on API 35+, ApplicationExitInfo REASON_USER_REQUESTED/REASON_USER_STOPPED on API 30+, nothing below 30. CaptureHealthMonitor records capture_paused_by_platform / force_stopped and keeps it until the capture components are registered again and a health probe succeeds; a process start alone never clears it. Record persisted by PreferencesCaptureHealthStore (identifiers and timestamps only).
 
 **Evidence.**
 
-- Planned: force-stop recovery tests (JVM, CI) in PR 2
+- TrackingPauseDetectorTest: API 35/36 start info, API 30-34 exit reason, below 30 nothing (JVM, CI)
+- CaptureHealthMonitorTest: after a force-stop the app shows tracking paused until capture health is restored; a new start voids the previous registration (JVM, CI)
+- PreferencesCaptureHealthStoreTest and AndroidPlatformSignalsTest (Robolectric SDK 36, CI)
 
 Source: https://developer.android.com/about/versions/15/behavior-changes-all
 
@@ -199,11 +207,12 @@ Apps inside a locked private space are stopped and hidden.
 | 35 | Private space introduced: locking it stops every app inside, hides notifications and widgets; apps cannot run in the background while locked. |
 | 36 | Same as 35. |
 
-**App handling.** PR 2 classifies a stop while running in a non-managed profile as private_space_paused (capture_paused_by_platform -> degraded); the public SDK cannot name the private space, so the doc records the residual ambiguity with clone profiles.
+**App handling.** TrackingPauseDetector classifies a force-stop or REASON_USER_STOPPED while running in a non-managed profile (UserManager.isProfile && !isManagedProfile, API 33+) as private_space_paused (capture_paused_by_platform -> degraded); recovery is the same registration-plus-probe path. Residual: the public SDK cannot distinguish the private space from a clone profile, so both classify the same way (recorded in capture-health-identifiers.json).
 
 **Evidence.**
 
-- Planned: private-space recovery tests (JVM, CI) in PR 2
+- TrackingPauseDetectorTest: a stop inside a non-managed profile is the private space; a work profile stop is a plain force-stop (JVM, CI)
+- CaptureHealthMonitorTest: a private-space stop is reported with its own reason and recovers the same way (JVM, CI)
 
 Source: https://developer.android.com/about/versions/15/behavior-changes-all
 
@@ -256,11 +265,13 @@ Standard Play Integrity requests bind a token to the protected request.
 | 35 | Same as 31. |
 | 36 | Same as 31. |
 
-**App handling.** PR 2 adds the request-hash binding, single-use bound tokens, a client TTL and a fail-closed reference verdict evaluator; server-side verification belongs to the api repository; classic requests are reserved to a documented registry with risk and quota budget.
+**App handling.** ProtectedRequest + IntegrityRequestBinding compute the base64url SHA-256 request hash (43 chars, under the 500-byte limit) over method, path, body digest, account scope, nonce and issue time; StandardIntegrityClient asks the provider for a token bound to that hash and distrusts a mismatched answer; BoundIntegrityToken attaches once, refuses a different request, a second use or a stale token and burns itself; IntegrityVerdictPolicy is the executable fail-closed reference table (wrong package, wrong request, expired, future-dated, replayed, unrecognised, basic-only, unlicensed all deny) that the api repository implements server-side; ClassicRequestRegistry reserves nothing and requires risk + budget for any future reservation; PlayStandardIntegrityTokenProvider is the Play adapter behind the interface (not exercised in tests).
 
 **Evidence.**
 
-- Planned: binding, replay, stale-token and adverse-verdict tests (JVM, CI) in PR 2
+- IntegrityRequestBindingTest, BoundIntegrityTokenTest, StandardIntegrityClientTest: binding, single use, wrong request, expiry, unavailable provider (JVM, CI)
+- IntegrityVerdictPolicyTest: every denial row plus the Play replay-protection shape (JVM, CI)
+- ClassicRequestRegistryTest: empty registry, reservation shape, budget ceiling (JVM, CI)
 
 Source: https://developer.android.com/google/play/integrity/standard
 
@@ -279,7 +290,7 @@ Entering the stopped state cancels pending intents.
 
 **Evidence.**
 
-- Documented; exercised by PR 2 force-stop recovery tests
+- Documented; CaptureHealthMonitorTest proves that a start after a force-stop stays paused until re-registration and a successful probe (JVM, CI)
 
 Source: https://developer.android.com/about/versions/15/behavior-changes-all
 <!-- matrix:end -->

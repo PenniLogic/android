@@ -1,6 +1,7 @@
 package com.pennilogic.android.contract
 
 import com.pennilogic.android.platform.PlatformBaseline
+import com.pennilogic.android.platform.settings.SensitiveSetting
 import com.pennilogic.android.testing.RepositoryFiles
 import com.pennilogic.android.testing.RepositoryFiles.androidAttribute
 import com.pennilogic.android.testing.RepositoryFiles.elements
@@ -112,13 +113,16 @@ class TargetConformanceTest {
     }
 
     @Test
-    fun `merged manifest requests no permission of its own`() {
+    fun `merged manifest requests only the normal permissions its libraries declare`() {
         val requested =
             merged
                 .elements("uses-permission")
                 .mapNotNull { it.androidAttribute("name") }
                 .filterNot { it.endsWith(".DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION") }
-        assertEquals("permissions requested: $requested", emptyList<String>(), requested)
+                .toSet()
+        assertEquals("permissions requested: $requested", LIBRARY_NORMAL_PERMISSIONS, requested)
+        val sensitive = SensitiveSetting.entries.map { it.platformName }.toSet()
+        assertEquals("sensitive permissions in the merged manifest", emptySet<String>(), requested intersect sensitive)
     }
 
     private fun application(): Element = merged.elements("application").single()
@@ -132,4 +136,18 @@ class TargetConformanceTest {
     }
 
     private fun fail(message: String): Nothing = throw AssertionError(message)
+
+    private companion object {
+        /**
+         * Install-time (normal) permissions declared by WorkManager's own manifest: no runtime prompt,
+         * no restricted setting, no special access. Any addition to this set is a reviewed decision.
+         */
+        val LIBRARY_NORMAL_PERMISSIONS =
+            setOf(
+                "android.permission.WAKE_LOCK",
+                "android.permission.ACCESS_NETWORK_STATE",
+                "android.permission.RECEIVE_BOOT_COMPLETED",
+                "android.permission.FOREGROUND_SERVICE",
+            )
+    }
 }

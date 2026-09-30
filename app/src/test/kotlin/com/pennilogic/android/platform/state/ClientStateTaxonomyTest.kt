@@ -177,6 +177,16 @@ class ClientStateTaxonomyTest {
     }
 
     @Test
+    fun `implementation paths named by the document exist`() {
+        val implementation = document.getAsJsonObject("implementation")
+        val kotlinRoot = RepositoryFiles.app.resolve("src/main/kotlin/com/pennilogic/android")
+        val paths = implementation.getAsJsonArray("code_paths").map { it.asString }
+        assertTrue(paths.isNotEmpty())
+        paths.forEach { assertTrue("missing $it", kotlinRoot.resolve(it).isFile) }
+        assertTrue(RepositoryFiles.root.resolve(implementation.get("document").asString).isFile)
+    }
+
+    @Test
     fun `observability event never records identifying or financial content`() {
         val observability = document.getAsJsonObject("observability")
         val attributes = observability.getAsJsonArray("attributes").map { it.asString }

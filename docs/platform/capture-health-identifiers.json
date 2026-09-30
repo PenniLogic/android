@@ -68,7 +68,7 @@
       "id": "private_space_paused",
       "condition": "capture_paused_by_platform",
       "description": "The private space holding the app was locked, which stops every app inside it and hides its notifications; nothing is captured until the space is unlocked.",
-      "detection": "Running in a non-managed profile (UserManager.isProfile() && !isManagedProfile()) and the last exit reason was REASON_USER_STOPPED or the start reports wasForceStopped(). The public SDK cannot name the private space explicitly, so a clone profile is classified the same way.",
+      "detection": "Running in a non-managed profile (UserManager.isProfile() && !isManagedProfile(), API 33+) and the last exit reason was REASON_USER_STOPPED or the start reports wasForceStopped(). The public SDK cannot name the private space explicitly, so a clone profile is classified the same way.",
       "clears_when": "Capture health is restored after the space is unlocked."
     },
     {
@@ -133,6 +133,19 @@
       "account or grant identifiers"
     ],
     "note": "The taxonomy signal client_state.<identifier> keeps exactly the published attributes; the condition and reason travel in android's own capture_health log event, not in the signal."
+  },
+  "implementation": {
+    "description": "Where the identifiers are produced; paths are relative to app/src/main/kotlin/com/pennilogic/android/ and ClientStateTaxonomyTest asserts they exist.",
+    "code_paths": [
+      "platform/state/ClientState.kt",
+      "platform/capture/CaptureHealth.kt",
+      "platform/capture/PlatformSignals.kt",
+      "platform/capture/TrackingPauseDetector.kt",
+      "platform/capture/CaptureHealthMonitor.kt",
+      "platform/settings/InstallSourceProbe.kt",
+      "platform/scheduling/StopReasonPolicy.kt"
+    ],
+    "document": "docs/platform/scheduling-and-capture-health.md"
   },
   "requests_to_taxonomy_owner": [
     "Record the seven reason identifiers above as the published platform-capability identifiers under capture_paused_by_platform and capture_blocked_by_setting (PenniLogic/docs#1 definition of done, item 3).",

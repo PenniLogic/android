@@ -24,6 +24,9 @@ navigation, storage, permission or network journey.
 | Java / Kotlin bytecode target | 17 | `app/build.gradle.kts` |
 | Compose BOM | 2026.06.01 (Compose 1.11.4; the newest line whose `minCompileSdk` fits compileSdk 36) | `gradle/libs.versions.toml` |
 | AndroidX core | 1.18.0 (the version the BOM already resolves) | `gradle/libs.versions.toml` |
+| WorkManager | 2.12.0 (`work-runtime-ktx`; `work-testing` in unit tests) | `gradle/libs.versions.toml` |
+| Play Integrity API client | 1.6.0 (adapter behind an interface; never called by tests) | `gradle/libs.versions.toml` |
+| kotlinx-coroutines-test | 1.9.0 (the coroutines line Compose already resolves) | `gradle/libs.versions.toml` |
 | Spotless / ktlint | 8.10.3 / 1.8.0 | `gradle/libs.versions.toml` |
 | JUnit | 4.13.2 | `gradle/libs.versions.toml` |
 | Robolectric | 4.17 (Android 16 / SDK 36 runtime jar by default, `app/src/test/resources/robolectric.properties`; `ApiLevelMatrixTest` also runs on the SDK 31, 33 and 35 runtimes) | `gradle/libs.versions.toml` |
@@ -128,22 +131,35 @@ all application data from backup and device transfer (`data_extraction_rules.xml
 and `backup_rules.xml` for older releases), and request no permissions in the source manifest.
 `ManifestContractTest` parses the **source** manifest (`app/src/main/AndroidManifest.xml`) and its
 XML resources; it fails if any of these declarations changes, and it asserts that the source
-declares exactly one exported activity and no service, receiver or provider. It does not inspect
-the merged manifest inside the APK.
+declares exactly one exported activity and no service, receiver or provider. `TargetConformanceTest`
+inspects the **merged** manifest of each variant (see the platform baseline below) and allow-lists
+exactly the four normal permissions WorkManager declares: `WAKE_LOCK`, `ACCESS_NETWORK_STATE`,
+`RECEIVE_BOOT_COMPLETED`, `FOREGROUND_SERVICE` — install-time permissions with no prompt, no
+restricted setting and no special access; any other requested permission fails the build.
 
 ### Merged manifest per variant
 
-Library manifests merge into the built APK. Verified with
-`aapt2 dump xmltree --file AndroidManifest.xml <apk>` on the scaffold's own builds:
+Library manifests merge into the built APK. Verified on the merged manifest AGP produces
+(`app/build/intermediates/merged_manifest/<variant>/`) and with `aapt2 dump xmltree` on the
+scaffold's own builds:
 
 | Component (merged manifest) | Origin | `debug` | `release` | Exported | Guard |
 | --- | --- | --- | --- | --- | --- |
 | `com.pennilogic.android.MainActivity` | source manifest | yes | yes | yes | launcher intent filter only |
 | `androidx.compose.ui.tooling.PreviewActivity` | `debugImplementation(androidx.compose.ui:ui-tooling)` | yes | **no** | yes | debug-only; Android Studio's preview/"run composable" host, no product code path |
 | `androidx.activity.ComponentActivity` | `debugImplementation(androidx.compose.ui:ui-test-manifest)` | yes | **no** | yes | debug-only; empty host activity for the synthetic-composition tests (Robolectric `RootSurfaceTest`, `PenniLogicBackHandlerTest` and the instrumented back and large-screen tests); it sets no content of its own |
+| `com.google.android.play.core.common.PlayCoreDialogWrapperActivity` | `com.google.android.play:integrity` | yes | yes | **no** | Play Core's dialog host for integrity remediation dialogs; not exported, `stateNotNeeded` |
 | `androidx.profileinstaller.ProfileInstallReceiver` | `androidx.profileinstaller` (transitive from Compose/Activity) | yes | yes | yes | `android.permission.DUMP` (signature/privileged; only shell/tooling can send) |
-| `androidx.startup.InitializationProvider` | `androidx.startup` (transitive) | yes | yes | **no** | authority `<applicationId>.androidx-startup` |
+| `androidx.startup.InitializationProvider` | `androidx.startup` (transitive) | yes | yes | **no** | authority `<applicationId>.androidx-startup`; initializers: WorkManager, EmojiCompat, ProcessLifecycle, ProfileInstaller |
+| `androidx.work.impl.background.systemjob.SystemJobService` | `androidx.work:work-runtime` | yes | yes | yes | `android.permission.BIND_JOB_SERVICE` (only the system's JobScheduler can bind) |
+| `androidx.work.impl.foreground.SystemForegroundService` | `androidx.work:work-runtime` | yes | yes | **no** | used only by expedited/foreground work; none is scheduled by the baseline |
+| `androidx.work.impl.utils.ForceStopRunnable$BroadcastReceiver` | `androidx.work:work-runtime` | yes | yes | **no** | WorkManager's own force-stop detection alarm target |
+| `androidx.work.impl.background.systemalarm.RescheduleReceiver` | `androidx.work:work-runtime` | yes | yes | **no** | `BOOT_COMPLETED`; `enabled="false"` until WorkManager has persisted work |
+| `androidx.work.impl.diagnostics.DiagnosticsReceiver` | `androidx.work:work-runtime` | yes | yes | yes | `android.permission.DUMP` (signature/privileged; `adb shell am broadcast … REQUEST_DIAGNOSTICS` only) |
+| `androidx.room.MultiInstanceInvalidationService` | `androidx.room` (transitive from WorkManager) | yes | yes | **no** | Room's multi-process invalidation; single-process app |
 | `<applicationId>.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION` | `androidx.core` (apps targeting API 33+) | yes | yes | n/a | signature permission declared and used by the app itself; not a runtime permission |
+| `uses-permission` `WAKE_LOCK`, `ACCESS_NETWORK_STATE`, `RECEIVE_BOOT_COMPLETED`, `FOREGROUND_SERVICE` | `androidx.work:work-runtime` | yes | yes | n/a | normal permissions; allow-listed by `TargetConformanceTest` |
+| `meta-data` `com.google.android.gms.version` | `com.google.android.play:integrity` (Play services basement) | yes | yes | n/a | version marker only |
 
 `PreviewActivity` and the test-manifest `ComponentActivity` are kept in the debug variant on
 purpose: the first is what Android Studio uses to run `@Preview` composables on a device, the second
@@ -177,7 +193,9 @@ and the QA documents live in `docs/platform/`:
 | `docs/platform/android-behavior-matrix.{json,md}` | API 31/33/35/36 behaviour differences, app handling, evidence, capture-health binding per behaviour | `BehaviorMatrixContractTest` (levels, cited paths exist, rendered view equals the JSON) |
 | `docs/platform/restricted-settings-matrix.md` | Play-installed, sideloaded and restored builds × sensitive settings × API level, with the supported QA recovery path | `RestrictedSettingsMatrixTest`, `RestrictedSettingsMatrixDocTest` (table block generated from code) |
 | `docs/platform/sideloaded-qa-prerequisites.md` | Developer verification, install paths, device prerequisites | `scripts/qa_sideload_prerequisites.py` + `scripts/tests/test_qa_sideload_prerequisites.py` |
-| `docs/platform/capture-health-identifiers.json` | Platform-capability and capture-health identifiers bound to the shared client state taxonomy (docs#1 v1.0.0) | `ClientStateTaxonomyTest` |
+| `docs/platform/capture-health-identifiers.json` | Platform-capability and capture-health identifiers bound to the shared client state taxonomy (docs#1 v1.0.0), with the code paths that produce them | `ClientStateTaxonomyTest` |
+| `docs/platform/scheduling-and-capture-health.md` | Stop-reason policy, durable queue semantics and the no-loss/no-duplication proof, WorkManager adapter, capture-health state machine, observability | the scheduling and capture tests above |
+| `docs/platform/play-integrity.md` | Standard-request binding and client flow, the server-side reference verification table (api repository implements it), classic-request reservations | the integrity tests above |
 
 | Primitive | Purpose | Tests |
 | --- | --- | --- |
@@ -186,20 +204,31 @@ and the QA documents live in `docs/platform/`:
 | `platform.ui.PenniLogicBackHandler` | The only way to intercept back: `PredictiveBackHandler` with gesture progress forwarded, cleared on cancel, `onBack` on commit; the manifest opts the application into predictive back and no legacy `onBackPressed()`/`KEYCODE_BACK` path exists | `PenniLogicBackHandlerTest`, `MainActivityLayoutTest` and `ApiLevelMatrixTest` (unhandled back finishes), `TargetConformanceTest`, `PlatformBaselineSourceTest`, `PredictiveBackInstrumentedTest` (local) |
 | `platform.state.ClientState*` | Pin of the shared taxonomy: the eight states, causes, scopes, the three `T-AND-07` conditions, the seven platform-capability reasons and the `client_state.<id>` signal with exactly the published attributes | `ClientStateTaxonomyTest` |
 | `platform.settings.RestrictedSettingsMatrix`, `CaptureSettingsProbe` | What each install source can enable per API level; classification of this build's install source from `getInstallSourceInfo`; the reason a capture surface renders when notification access is missing | `RestrictedSettingsMatrixTest`, `InstallSourceProbeTest` |
+| `platform.scheduling.StopReason`, `StandbyBucket`, `StopReasonPolicy` | One vocabulary for JobScheduler/WorkManager stop reasons (incl. Android 16's `timeout_abandoned`) and standby buckets; the disposition after a stop always releases claimed items; only the restricted bucket or a user restriction pauses capture | `StopReasonTest` |
+| `platform.scheduling.DurableQueue`, `InMemoryDurableQueue`, `QueueDrainer` | Crash-safe queue contract (one copy per idempotency key, owner leases, expiry) and a drain proven not to lose or duplicate items across quota stops, crashes at every operation, cancellation and lease takeover | `DurableQueueContractTest`, `QueueDrainerTest` |
+| `platform.scheduling.QueueDrainWorker`, `WorkerResultMapper` | WorkManager base worker: reads the platform stop reason, drains, logs the `capture_health` event, never fails a chain because of a platform stop | `WorkerResultMapperTest`, `QueueDrainWorkerTest` (Robolectric + `work-testing`) |
+| `platform.capture.CaptureHealth`, `TrackingPauseDetector`, `CaptureHealthMonitor`, `PlatformSignals` | `healthy` / `paused(reason)` / `blocked(reason)` bound to the taxonomy; force-stop (API 35+ `ApplicationStartInfo.wasForceStopped`, API 30+ `ApplicationExitInfo`) and private-space detection; tracking stays paused after a force-stop until the capture components are registered again and a probe succeeds | `CaptureHealthTest`, `TrackingPauseDetectorTest`, `CaptureHealthMonitorTest`, `PreferencesCaptureHealthStoreTest`, `AndroidPlatformSignalsTest` |
+| `platform.integrity.*` | Standard Play Integrity request binding (`requestHash`), single-use bound tokens with a client TTL, the executable fail-closed reference verdict table the api repository implements, the empty classic-request registry, the Play adapter behind the provider interface | `IntegrityRequestBindingTest`, `BoundIntegrityTokenTest`, `StandardIntegrityClientTest`, `IntegrityVerdictPolicyTest`, `ClassicRequestRegistryTest` |
 
 Conformance rules enforced on every build: the merged manifest of each variant targets API 36 and
 declares no `maxSdkVersion`; no source-set manifest declares `<uses-sdk>`; `enableOnBackInvokedCallback`
 is `true` on the application and `false` on no activity; no activity declares `screenOrientation`,
 `resizeableActivity="false"`, `minAspectRatio` or `maxAspectRatio`; no `android.window.PROPERTY_COMPAT_*`
 manifest property exists; no theme sets `windowOptOutEdgeToEdgeEnforcement`; no code calls
-`setRequestedOrientation()`. The second pull request of android#57 adds the scheduling, capture-health
-and Play Integrity primitives listed as `planned_pr2` in the behaviour matrix.
+`setRequestedOrientation()`; the merged manifest requests only WorkManager's four normal permissions.
+
+Observability added by the baseline: one structured `Log.i` event with tag `PenniLogic`,
+`{"event":"capture_health","api_level":…,"target_api":36,"stop_reason":…,"standby_bucket":…,"standby_bucket_raw":…,"capture_health":…,"condition":…,"reason":…}`,
+logged by the drain worker (stop reason and bucket) and by the capture-health monitor (state); it
+carries no device identifier, transaction, amount, message or account content.
 
 ## Observability
 
 - Process start logs one structured `Log.i` event with tag `PenniLogic`:
   `{"event":"app_start","build_type":…,"version_name":…,"version_code":…,"configuration":"loaded"|"invalid","problems":[…]}`.
   It contains build metadata and problem identifiers only; no configuration values, no user data.
+- The platform baseline logs the `capture_health` event described above (API level, stop reason,
+  standby bucket, capture-health state); no device identifier or financial content.
 - Pipeline metrics: build duration, unit test counts and lint issue counts per gate in
   `build/quality-metrics.json` and, in GitHub Actions, the job summary.
 
