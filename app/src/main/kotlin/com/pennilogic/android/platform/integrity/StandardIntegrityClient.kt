@@ -148,8 +148,10 @@ class StandardIntegrityClient(
             }
 
             is IntegrityTokenResult.Token -> {
-                // A provider answering with a different hash is treated as unavailable, never trusted.
-                if (result.requestHash != requestHash) return Binding.Unavailable(IntegrityUnavailable.PROVIDER_INVALID)
+                // A provider answering with a different hash, or with no token, is unavailable, never trusted.
+                if (result.requestHash != requestHash || result.token.isBlank()) {
+                    return Binding.Unavailable(IntegrityUnavailable.PROVIDER_INVALID)
+                }
                 Binding.Bound(
                     BoundIntegrityToken(
                         result.token,

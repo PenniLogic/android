@@ -161,11 +161,18 @@ class StandardIntegrityClientTest {
         }
 
     @Test
-    fun `a provider answering for another hash is not trusted`() =
+    fun `a provider answering for another hash or with no token is not trusted`() =
         runTest {
-            val provider = StandardIntegrityTokenProvider { IntegrityTokenResult.Token("tok", "some-other-hash", now) }
-            val binding = StandardIntegrityClient(provider, { now }).bind(request())
-            assertEquals(StandardIntegrityClient.Binding.Unavailable(IntegrityUnavailable.PROVIDER_INVALID), binding)
+            val otherHash = StandardIntegrityTokenProvider { IntegrityTokenResult.Token("tok", "some-other-hash", now) }
+            assertEquals(
+                StandardIntegrityClient.Binding.Unavailable(IntegrityUnavailable.PROVIDER_INVALID),
+                StandardIntegrityClient(otherHash, { now }).bind(request()),
+            )
+            val blankToken = StandardIntegrityTokenProvider { hash -> IntegrityTokenResult.Token(" ", hash, now) }
+            assertEquals(
+                StandardIntegrityClient.Binding.Unavailable(IntegrityUnavailable.PROVIDER_INVALID),
+                StandardIntegrityClient(blankToken, { now }).bind(request()),
+            )
         }
 
     @Test
