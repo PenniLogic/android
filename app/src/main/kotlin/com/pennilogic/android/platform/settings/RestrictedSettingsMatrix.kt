@@ -144,12 +144,16 @@ data class RestrictedSettingsCell(
  *   and runtime grants; none is guaranteed, so a restored build treats every grant as one to re-check
  *   and ask for again.
  *
- * The app cannot read the package source of its own install on API 33/34 from a plain classifier
- * input (`InstallSourceInfo.getPackageSource()` does report it from 33), so `InstallSourceClassifier`
- * uses two proxies for the legacy path: an installing or initiating package that is a package
- * installer app, and an install whose installing package is gone while the initiating package is
- * not the shell. A proxy can claim a lock the platform did not apply; the app's posture is safe either
- * way, because an unproven lock only changes the destination of the recovery action.
+ * The app reads the package source the installer declared from API 33 (`AndroidInstallSourceReader`
+ * via `InstallSourceInfo.getPackageSource()`; the getter does not exist on API 30–32, where the
+ * snapshot carries no source). A declared file source is the platform's own lock criterion and always
+ * wins. For every other report — a source that is unspecified, `OTHER` or `STORE`, or no source at all
+ * on API 30–32 — `InstallSourceClassifier` falls back to the installing and initiating package names:
+ * Google Play and the shell are recognised directly, and the legacy sideload path through two
+ * proxies: an installing or initiating package that is a package installer app, and an install whose
+ * installing package is gone while the initiating package is not the shell. A proxy can claim a lock
+ * the platform did not apply; the app's posture is safe either way, because an unproven lock only
+ * changes the destination of the recovery action.
  *
  * `docs/platform/restricted-settings-matrix.md` renders this matrix; `RestrictedSettingsMatrixTest`
  * keeps the document identical to the code and asserts the invariants above.

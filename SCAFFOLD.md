@@ -82,8 +82,53 @@ counts (tests, failures, errors, skipped) and lint issue counts by severity in
 `build/quality-metrics.json`; when `GITHUB_STEP_SUMMARY` is set it also appends a Markdown
 table to the job summary. `self-test` plants a failing unit test, a formatting violation and an
 unused resource one at a time, asserts that the matching gate exits non-zero (and that the
-failing test is counted as a failure, not skipped), removes each planted file and finally runs
-the gates again to prove they pass without the defects.
+failing test is counted as a failure, not skipped), removes each planted file, runs the gates
+again to prove they pass without the defects, and finally plants an up-to-date and a cached
+unit-test run to prove the gate refuses results it did not produce (next section).
+
+### Unit-test results are evidence only when the current run produced them
+
+`gradle.properties` enables the build cache, and the JUnit XML files under
+`app/build/test-results/` are declared outputs of the unit-test tasks. A `FROM-CACHE` hit or an
+`UP-TO-DATE` check therefore restores a complete, green result set without executing a single
+test, and a count read from those files would report it as evidence (android#69; observed on
+`main` in CI run 36685475654, where the `coverage` gate consumed `testDebugUnitTest UP-TO-DATE`
+and the self-test recovery run `testDebugUnitTest FROM-CACHE`). The script closes this with two
+independent measures that hold with the cache **enabled**, which is the repository default:
+
+1. **Forced execution.** Every unit-test task is invoked with Gradle's `--rerun` task option
+   (`gradlew testDebugUnitTest --rerun testReleaseUnitTest --rerun …`). The option applies to the
+   named task only, so compilation and resource tasks stay cacheable; `--rerun-tasks` would rebuild
+   the whole graph and `--no-build-cache` would not touch the up-to-date check. The `coverage` gate
+   names `testDebugUnitTest --rerun` ahead of `createDebugUnitTestCoverageReport` for the same
+   reason: the report task alone would accept a reused test run.
+2. **Outcome check on the captured console.** The script streams Gradle's plain console and keeps
+   a copy. Each unit-test task the gate consumes must have printed a `> Task :app:test…UnitTest`
+   header without an outcome label (an executed task; `FAILED` is an execution too). `FROM-CACHE`,
+   `UP-TO-DATE`, `NO-SOURCE`, `SKIPPED`, a label the script does not know, or a task Gradle never
+   reported makes the gate exit 1 even when Gradle exited 0. The check is fail-closed: a change in
+   Gradle's header format would refuse every run rather than accept a reused one. The metrics
+   record carries `unit_test_tasks` (the verdict per task) and, on a refusal, `gradle_exit_code`
+   and `refused`; a verdict that is neither one of Gradle's reuse labels nor `not run` is worded
+   `(unknown task outcome)` in `refused` so a Gradle change is recognised as such — the refusal
+   itself never depends on that list. The restored counts are still written under the red exit code
+   for diagnosis.
+
+File timestamps are deliberately not used: a build-cache restore writes fresh files, so a
+modification time newer than the gate start proves nothing about execution.
+
+The self-test proves both plants after its recovery run, which has just executed
+`testDebugUnitTest` on the clean tree. `up-to-date unit-test results are refused` replays the task
+without `--rerun` (Gradle reports `UP-TO-DATE`); `cached unit-test results are refused` deletes the
+task's outputs (`app/build/test-results/testDebugUnitTest`, `app/build/reports/tests/testDebugUnitTest`)
+and replays it with `--build-cache`, so the only reuse left is a cache hit and the plant holds even
+when caching is disabled in the environment (a cold cache executes and stores once; the second round
+must restore). A case passes only when Gradle exited 0, the gate's exit code is not 0 and the observed
+outcome is exactly the planted one; the recovery run itself must show the test task executed. These
+two plants are the only unit-test invocations the script makes without `--rerun` (`build` and `lint`
+name no unit-test task, so the option does not apply to them). The price of the design is
+that the debug unit tests execute twice in `all` (once in `test`, once in `coverage`) and once more in
+the self-test recovery; that is the evidence, not overhead to optimise away.
 
 ## Build configuration keys
 
@@ -201,7 +246,7 @@ and the QA documents live in `docs/platform/`:
 | --- | --- | --- |
 | `PlatformBaseline` | The pinned levels (target 36, compile 36, min 26, QA levels 31/33/35/36, 600dp large-screen threshold) as code | `TargetConformanceTest` compares them with the catalogue and each variant's **merged** manifest |
 | `platform.ui.RootSurface` | Mandatory root of every screen: applies `WindowInsets.safeDrawing` once, lays content out by the `WindowWidthClass` of the usable width after insets (compact <600dp, medium 600–839dp, expanded ≥840dp with an 840dp single-pane layout cap — a pane cap, not a readable measure, which is `T-DSY-01`'s typography decision); tags `pennilogic.root_surface`, `pennilogic.root_inset_area`, `pennilogic.root_content` | `RootSurfaceTest` (injected insets, 360/620/700/1000dp), `MainActivityLayoutTest` (real activity at four window sizes, both variants, with the heading/merged-semantics accessibility contract), `ApiLevelMatrixTest` (real activity on the SDK 31/33/35/36 runtimes), `PlatformBaselineSourceTest` + `SourceRulesSelfTest` (every `setContent` root calls it; the window-insets API is imported and used nowhere else; rules proven on planted snippets), `EdgeToEdgeInstrumentedTest`, `LargeScreenInstrumentedTest` (local) |
-| `platform.ui.PenniLogicBackHandler` | The only way to intercept back: `PredictiveBackHandler` with gesture progress forwarded, cleared on cancel, `onBack` on commit; `enabled` is required and must be true only while there is something in-app to go back to (no back trap); the manifest opts the application into predictive back and no legacy `onBackPressed()`/`KEYCODE_BACK` path exists | `PenniLogicBackHandlerTest`, `MainActivityLayoutTest` and `ApiLevelMatrixTest` (unhandled back finishes), `TargetConformanceTest`, `PlatformBaselineSourceTest` + `SourceRulesSelfTest` (direct back registration caught by import and by call, incl. `BackHandler {`; `enabled` stated at every call), `PredictiveBackInstrumentedTest` (local) |
+| `platform.ui.PenniLogicBackHandler` | The only way to intercept back: `PredictiveBackHandler` with gesture progress forwarded, cleared on cancel, `onBack` on commit; `enabled` is required and must be true only while there is something in-app to go back to (no back trap); the manifest opts the application into predictive back and no legacy `onBackPressed()`/`KEYCODE_BACK` path exists | `PenniLogicBackHandlerTest`, `MainActivityLayoutTest` and `ApiLevelMatrixTest` (unhandled back finishes), `TargetConformanceTest`, `PlatformBaselineSourceTest` + `SourceRulesSelfTest` (direct back registration caught by import and by call, incl. `BackHandler {` and the fully qualified `androidx.activity.compose.BackHandler(...)` that needs no import; `enabled` stated at every call), `PredictiveBackInstrumentedTest` (local) |
 | `platform.state.ClientState*` | Pin of the shared taxonomy: the eight states with their per-state scope applicability, causes, the three `T-AND-07` conditions, the seven platform-capability reasons and the `client_state.<id>` signal with exactly the published attributes (scope allowed for the state, cause only for `permission_denied`, `permission` a platform permission or role name) | `ClientStateTaxonomyTest` |
 | `platform.settings.RestrictedSettingsMatrix`, `CaptureSettingsProbe` | What each install source can enable per API level on an AOSP-default device (API 33/34: declared package source; API 35/36: installer trust, decided lazily); the app's proxy classification of its install source from `getInstallSourceInfo`; the reason a capture surface renders when notification access is missing (it changes only the recovery destination) | `RestrictedSettingsMatrixTest`, `InstallSourceProbeTest`, `RestrictedSettingsMatrixDocTest` (incl. the no-bypass-command guard over both QA documents) |
 | `platform.scheduling.StopReason`, `StandbyBucket`, `StopReasonPolicy` | One vocabulary for JobScheduler/WorkManager stop reasons (incl. Android 16's `timeout_abandoned`) and standby buckets; the disposition after a stop always releases claimed items; only the restricted bucket or a user restriction pauses capture | `StopReasonTest` |
@@ -231,8 +276,10 @@ carries no device identifier, transaction, amount, message or account content.
   It contains build metadata and problem identifiers only; no configuration values, no user data.
 - The platform baseline logs the `capture_health` event described above (API level, stop reason,
   standby bucket, capture-health state); no device identifier or financial content.
-- Pipeline metrics: build duration, unit test counts and lint issue counts per gate in
-  `build/quality-metrics.json` and, in GitHub Actions, the job summary.
+- Pipeline metrics: build duration, unit test counts, the per-task verdict that each consumed
+  unit-test task executed in the current run (`unit_test_tasks`, with `refused` when it did not)
+  and lint issue counts per gate in `build/quality-metrics.json` and, in GitHub Actions, the job
+  summary.
 
 ## Rollout and rollback
 
