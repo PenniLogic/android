@@ -61,6 +61,9 @@ UNIT_TEST_TASKS = ("testDebugUnitTest", "testReleaseUnitTest")
 EXECUTED = "executed"
 NOT_RUN = "not run"
 EXECUTED_LABELS = (EXECUTED, "FAILED")
+# Gradle's own labels for a task whose outputs were reused or that did no work. Not an allow or deny
+# list: the refusal is "anything outside EXECUTED_LABELS"; this tuple only words the refusal message
+# as a known reuse versus a label this script has never seen (a Gradle change to investigate).
 REUSED_LABELS = ("FROM-CACHE", "UP-TO-DATE", "NO-SOURCE", "SKIPPED")
 # `> Task :app:testDebugUnitTest FROM-CACHE`; an executed task prints `> Task :app:testDebugUnitTest`,
 # possibly several times when its output interleaves with another task's under parallel execution.
@@ -186,9 +189,12 @@ def gate_exit_code(gradle_exit_code: int, verdicts: dict[str, str]) -> int:
 
 
 def refusal(verdicts: dict[str, str]) -> str:
+    """One line naming each refused task and its verdict, qualifying anything that is neither a
+    known Gradle reuse label nor a task Gradle never reported."""
     refused = refused_unit_tests(verdicts)
     return "unit-test results were not produced by this run: " + ", ".join(
-        f"{task} {verdict}" for task, verdict in refused.items()
+        f"{task} {verdict}" + ("" if verdict in REUSED_LABELS or verdict == NOT_RUN else " (unknown task outcome)")
+        for task, verdict in refused.items()
     )
 
 

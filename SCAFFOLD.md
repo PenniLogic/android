@@ -109,7 +109,10 @@ independent measures that hold with the cache **enabled**, which is the reposito
    reported makes the gate exit 1 even when Gradle exited 0. The check is fail-closed: a change in
    Gradle's header format would refuse every run rather than accept a reused one. The metrics
    record carries `unit_test_tasks` (the verdict per task) and, on a refusal, `gradle_exit_code`
-   and `refused`; the restored counts are still written under the red exit code for diagnosis.
+   and `refused`; a verdict that is neither one of Gradle's reuse labels nor `not run` is worded
+   `(unknown task outcome)` in `refused` so a Gradle change is recognised as such — the refusal
+   itself never depends on that list. The restored counts are still written under the red exit code
+   for diagnosis.
 
 File timestamps are deliberately not used: a build-cache restore writes fresh files, so a
 modification time newer than the gate start proves nothing about execution.
@@ -122,7 +125,8 @@ and replays it with `--build-cache`, so the only reuse left is a cache hit and t
 when caching is disabled in the environment (a cold cache executes and stores once; the second round
 must restore). A case passes only when Gradle exited 0, the gate's exit code is not 0 and the observed
 outcome is exactly the planted one; the recovery run itself must show the test task executed. These
-two plants are the only invocations the script makes without `--rerun`. The price of the design is
+two plants are the only unit-test invocations the script makes without `--rerun` (`build` and `lint`
+name no unit-test task, so the option does not apply to them). The price of the design is
 that the debug unit tests execute twice in `all` (once in `test`, once in `coverage`) and once more in
 the self-test recovery; that is the evidence, not overhead to optimise away.
 

@@ -367,6 +367,86 @@ class QualityGatesTest(unittest.TestCase):
         self.assertEqual(0, report["recovery"]["gradle_exit_code"])
         self.assertIn("testDebugUnitTest FROM-CACHE", report["recovery"]["refused"])
 
+    # A plant is a refusal only when all three legs hold: Gradle green, gate red, observed == planted.
+    # Each leg is pinned by its own negative so that `exit_code != 0` alone can never pass for it.
+
+    def test_reused_results_case_is_not_a_refusal_when_gradle_itself_failed(self) -> None:
+        red = gradle_run(1, "> Task :app:testDebugUnitTest\n> Task :app:testDebugUnitTest FAILED\nBUILD FAILED\n")
+
+        with mock.patch.object(quality_gates, "run_gradle", return_value=red) as run:
+            outcome = quality_gates.reused_results_case("plant", "UP-TO-DATE", clean_outputs=False)
+
+        run.assert_called_once_with(("testDebugUnitTest",), (), force_unit_tests=False)
+        self.assertEqual(
+            {
+                "case": "plant",
+                "exit_code": 1,
+                "gradle_exit_code": 1,
+                "duration_seconds": 1.0,
+                "expected_outcome": "UP-TO-DATE",
+                "observed_outcome": "executed",
+                "rounds": [{"gradle_exit_code": 1, "duration_seconds": 1.0, "outcome": "executed"}],
+                "failed_as_expected": False,
+            },
+            outcome,
+        )
+
+    def test_reused_results_case_is_not_a_refusal_when_gradle_failed_without_running_the_task(self) -> None:
+        red = gradle_run(1, "> Task :app:compileDebugUnitTestKotlin FAILED\nBUILD FAILED\n")
+
+        with mock.patch.object(quality_gates, "run_gradle", return_value=red):
+            outcome = quality_gates.reused_results_case("plant", "UP-TO-DATE", clean_outputs=False)
+
+        # The gate would refuse this run too (exit 1, `not run`), but a red Gradle is not a planted reuse.
+        self.assertEqual((1, 1, "not run", False), (outcome["exit_code"], outcome["gradle_exit_code"], outcome["observed_outcome"], outcome["failed_as_expected"]))
+
+    def test_reused_results_case_is_not_a_refusal_when_gradle_is_red_despite_the_planted_label(self) -> None:
+        # Gradle reported the reuse and then failed for another reason: label and gate exit match the
+        # plant, but the gate did not refuse a green run, which is the only thing the plant proves.
+        red = gradle_run(1, "> Task :app:testDebugUnitTest UP-TO-DATE\nFAILURE: Build failed with an exception.\nBUILD FAILED\n")
+
+        with mock.patch.object(quality_gates, "run_gradle", return_value=red):
+            outcome = quality_gates.reused_results_case("plant", "UP-TO-DATE", clean_outputs=False)
+
+        self.assertEqual((1, 1, "UP-TO-DATE", False), (outcome["gradle_exit_code"], outcome["exit_code"], outcome["observed_outcome"], outcome["failed_as_expected"]))
+
+    def test_reused_results_case_reports_what_the_gate_decided_not_what_it_expected(self) -> None:
+        # A gate that (wrongly) accepted the planted label returns 0; the plant must then say "not refused".
+        with mock.patch.object(quality_gates, "run_gradle", return_value=gradle_run(0, DEBUG_UP_TO_DATE)):
+            with mock.patch.object(quality_gates, "gate_exit_code", return_value=0) as gate:
+                outcome = quality_gates.reused_results_case("plant", "UP-TO-DATE", clean_outputs=False)
+
+        gate.assert_called_once_with(0, {"testDebugUnitTest": "UP-TO-DATE"})
+        self.assertEqual((0, 0, "UP-TO-DATE", False), (outcome["gradle_exit_code"], outcome["exit_code"], outcome["observed_outcome"], outcome["failed_as_expected"]))
+
+    def test_reused_results_case_is_not_a_refusal_for_a_label_other_than_the_planted_one(self) -> None:
+        cached = gradle_run(0, DEBUG_FROM_CACHE)
+
+        with mock.patch.object(quality_gates, "run_gradle", return_value=cached):
+            outcome = quality_gates.reused_results_case("plant", "UP-TO-DATE", clean_outputs=False)
+
+        self.assertEqual(0, outcome["gradle_exit_code"])
+        self.assertEqual(1, outcome["exit_code"])
+        self.assertEqual("FROM-CACHE", outcome["observed_outcome"])
+        self.assertFalse(outcome["failed_as_expected"])
+
+    def test_reused_results_case_is_a_refusal_only_for_the_planted_label(self) -> None:
+        with mock.patch.object(quality_gates, "run_gradle", return_value=gradle_run(0, DEBUG_UP_TO_DATE)):
+            outcome = quality_gates.reused_results_case("plant", "UP-TO-DATE", clean_outputs=False)
+
+        self.assertEqual((0, 1, "UP-TO-DATE", True), (outcome["gradle_exit_code"], outcome["exit_code"], outcome["observed_outcome"], outcome["failed_as_expected"]))
+
+    def test_reused_results_case_cache_plant_stops_after_two_executed_rounds(self) -> None:
+        executed = gradle_run(0, "> Task :app:testDebugUnitTest\nBUILD SUCCESSFUL\n")
+
+        with mock.patch.object(quality_gates, "run_gradle", return_value=executed) as run:
+            outcome = quality_gates.reused_results_case("plant", "FROM-CACHE", clean_outputs=True, extra=("--build-cache",))
+
+        self.assertEqual(2, run.call_count)
+        run.assert_called_with(("testDebugUnitTest",), ("--build-cache",), force_unit_tests=False)
+        self.assertEqual(["executed", "executed"], [r["outcome"] for r in outcome["rounds"]])
+        self.assertEqual((0, 0, "executed", False), (outcome["gradle_exit_code"], outcome["exit_code"], outcome["observed_outcome"], outcome["failed_as_expected"]))
+
     def test_self_test_refuses_when_planted_paths_already_exist(self) -> None:
         quality_gates.FAILING_TEST.parent.mkdir(parents=True, exist_ok=True)
         quality_gates.FAILING_TEST.write_text("existing", encoding="utf-8")
@@ -455,6 +535,13 @@ class QualityGatesTest(unittest.TestCase):
             "unit-test results were not produced by this run: testReleaseUnitTest FROM-CACHE",
             quality_gates.refusal({"testDebugUnitTest": "executed", "testReleaseUnitTest": "FROM-CACHE"}),
         )
+        # A known reuse label and a never-reported task are named as they are; anything else is flagged as unknown.
+        self.assertEqual(
+            "unit-test results were not produced by this run: testDebugUnitTest not run, testReleaseUnitTest RESTORED (unknown task outcome)",
+            quality_gates.refusal({"testDebugUnitTest": "not run", "testReleaseUnitTest": "RESTORED"}),
+        )
+        for label in quality_gates.REUSED_LABELS:
+            self.assertNotIn("unknown", quality_gates.refusal({"testDebugUnitTest": label}), label)
 
     def write_unit_test_results(self) -> None:
         self.write("build/test-results/testDebugUnitTest/TEST-a.xml", JUNIT_REPORT.format(tests=5, skipped=0, failures=0, errors=0))
@@ -545,18 +632,43 @@ class QualityGatesTest(unittest.TestCase):
         self.assertFalse(debug_html.parent.exists())
         self.assertTrue(release.is_file())
 
-    def test_run_gradle_streams_and_captures_the_console_and_exit_code(self) -> None:
-        # A stand-in wrapper in the sandbox root prints a cached outcome and exits 3.
+    def test_remove_unit_test_outputs_raises_when_a_directory_cannot_be_removed(self) -> None:
+        # An undeletable output directory must surface, not be ignored and later read back as UP-TO-DATE.
+        results = self.write("build/test-results/testDebugUnitTest/TEST-a.xml", "<x/>").parent
+        self.write("build/reports/tests/testDebugUnitTest/index.html", "<html/>")
+
+        with mock.patch.object(quality_gates.shutil, "rmtree", side_effect=PermissionError("locked")) as rmtree:
+            with self.assertRaises(PermissionError):
+                quality_gates.remove_unit_test_outputs("Debug")
+
+        rmtree.assert_called_once_with(results)
+        self.assertTrue(results.is_dir())
+
+    def test_reused_results_case_propagates_an_undeletable_output_directory(self) -> None:
+        self.write("build/test-results/testDebugUnitTest/TEST-a.xml", "<x/>")
+
+        with mock.patch.object(quality_gates.shutil, "rmtree", side_effect=PermissionError("locked")):
+            with mock.patch.object(quality_gates, "run_gradle") as run:
+                with self.assertRaises(PermissionError):
+                    quality_gates.reused_results_case("plant", "FROM-CACHE", clean_outputs=True, extra=("--build-cache",))
+        run.assert_not_called()
+
+    def stand_in_wrapper(self, lines: list[str], exit_code: int) -> Path:
+        """Write a gradlew stand-in into the sandbox root that prints [lines] and exits with [exit_code]."""
         if os.name == "nt":
             wrapper = self.root / "gradlew.bat"
-            wrapper.write_text(
-                "@echo off\r\necho ^> Task :app:testDebugUnitTest FROM-CACHE\r\necho BUILD SUCCESSFUL in 1s\r\nexit /b 3\r\n",
-                encoding="ascii",
-            )
+            body = "@echo off\r\n" + "".join(f"echo {line.replace('>', '^>')}\r\n" for line in lines) + f"exit /b {exit_code}\r\n"
+            wrapper.write_text(body, encoding="ascii")
         else:
             wrapper = self.root / "gradlew"
-            wrapper.write_text('#!/bin/sh\necho "> Task :app:testDebugUnitTest FROM-CACHE"\necho "BUILD SUCCESSFUL in 1s"\nexit 3\n', encoding="ascii")
+            body = "#!/bin/sh\n" + "".join(f'echo "{line}"\n' for line in lines) + f"exit {exit_code}\n"
+            wrapper.write_text(body, encoding="ascii")
             wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
+        return wrapper
+
+    def test_run_gradle_streams_and_captures_the_console_and_exit_code(self) -> None:
+        # A stand-in wrapper in the sandbox root prints a cached outcome and exits 3.
+        self.stand_in_wrapper(["> Task :app:testDebugUnitTest FROM-CACHE", "BUILD SUCCESSFUL in 1s"], 3)
         printed = io.StringIO()
 
         with contextlib.redirect_stdout(printed):
@@ -568,6 +680,33 @@ class QualityGatesTest(unittest.TestCase):
         self.assertIn("> Task :app:testDebugUnitTest FROM-CACHE", printed.getvalue())
         self.assertIn("testDebugUnitTest --rerun --console=plain", printed.getvalue().splitlines()[0])
         self.assertGreaterEqual(run.duration_seconds, 0.0)
+
+    def test_run_gradle_kills_the_wrapper_when_the_console_consumer_is_interrupted(self) -> None:
+        # The same contract subprocess.run had: an interrupted gate does not leave Gradle running. The
+        # interrupt is raised from the console consumer (print) while the wrapper is still alive.
+        self.stand_in_wrapper(["> Task :app:testDebugUnitTest", "BUILD SUCCESSFUL in 1s"], 0)
+        real_popen = quality_gates.subprocess.Popen
+        processes: list = []
+
+        def recording_popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            process.kill = mock.Mock(wraps=process.kill)  # type: ignore[method-assign]
+            processes.append(process)
+            return process
+
+        def interrupting_print(*args, **kwargs):
+            if args and str(args[0]).startswith("> Task"):
+                raise KeyboardInterrupt
+            return None
+
+        with mock.patch.object(quality_gates.subprocess, "Popen", side_effect=recording_popen):
+            with mock.patch("builtins.print", side_effect=interrupting_print):
+                with self.assertRaises(KeyboardInterrupt):
+                    quality_gates.run_gradle(("testDebugUnitTest",))
+
+        self.assertEqual(1, len(processes))
+        processes[0].kill.assert_called_once_with()
+        self.assertIsNotNone(processes[0].returncode, "the context manager waited for the killed process")
 
 
 if __name__ == "__main__":
