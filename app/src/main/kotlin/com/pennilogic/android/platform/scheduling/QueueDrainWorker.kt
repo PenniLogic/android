@@ -72,7 +72,7 @@ abstract class QueueDrainWorker(
 
     final override suspend fun doWork(): Result {
         val drainer = createDrainer(owner = "work:$id:$runAttemptCount")
-        val outcome = drainer.drain { WorkerResultMapper.stopReason(isStopped, currentPlatformStopReason()) }
+        val outcome = drainer.drain { platformStop() }
         val (bucket, raw) = signals.standbyBucket()
         val stopReason = (outcome as? DrainOutcome.Stopped)?.reason
         Log.i(
@@ -87,6 +87,15 @@ abstract class QueueDrainWorker(
         )
         return WorkerResultMapper.map(outcome)
     }
+
+    /**
+     * The platform's stop signal, polled by the drainer before every claim and every send: null while
+     * running, the mapped [StopReason] once WorkManager stopped this worker. Production reads
+     * `isStopped` / `getStopReason()`; open so a test can drive the polled stop path, which WorkManager's
+     * public API cannot trigger from outside the library.
+     */
+    protected open fun platformStop(): StopReason? =
+        WorkerResultMapper.stopReason(isStopped, currentPlatformStopReason())
 
     private fun currentPlatformStopReason(): Int =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) stopReason else StopReason.UNKNOWN.platformValue

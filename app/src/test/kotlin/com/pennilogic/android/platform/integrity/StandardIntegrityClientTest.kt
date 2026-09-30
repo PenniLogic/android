@@ -74,6 +74,25 @@ class IntegrityRequestBindingTest {
             ProtectedRequest("POST", "/x", "not-a-digest", "acct", "nonce-0123456789abcdef", 1)
         }
     }
+
+    @Test
+    fun `no field may carry a control character, so two different requests never share a canonical form`() {
+        // Without the rule these two would serialize to identical bytes: "GET\n/A\n/b..." both ways.
+        assertThrows(IllegalArgumentException::class.java) { request(method = "GET\n/A", path = "/b") }
+        assertThrows(IllegalArgumentException::class.java) { request(method = "GET", path = "/A\n/b") }
+        assertThrows(IllegalArgumentException::class.java) { request(accountScope = "acct\nnonce-0123456789abcdef") }
+        assertThrows(IllegalArgumentException::class.java) { request(nonce = "nonce-0123456789abcdef\r") }
+        assertThrows(IllegalArgumentException::class.java) { request(path = "/v1/\u0000") }
+        assertThrows(IllegalArgumentException::class.java) { request(path = "/v1/\u007f") }
+        val boundary = "acct\u0020ok"
+        assertEquals(boundary, request(accountScope = boundary).accountScope)
+        val canonical = request().canonical()
+        assertEquals(
+            "exactly six delimiters: one per field boundary",
+            6,
+            canonical.count { it == '\n' },
+        )
+    }
 }
 
 class BoundIntegrityTokenTest {
@@ -122,6 +141,13 @@ class BoundIntegrityTokenTest {
         val token = BoundIntegrityToken("secret-token-value", hash, 1_000)
         assertFalse(token.toString().contains("secret-token-value"))
         assertThrows(IllegalArgumentException::class.java) { BoundIntegrityToken(" ", hash, 1_000) }
+        val result = IntegrityTokenResult.Token("secret-token-value", hash, 1_000)
+        assertFalse("provider result: $result", result.toString().contains("secret-token-value"))
+        assertTrue(result.toString().contains(hash))
+        val attachment = token.attachTo(bound, nowMillis = 2_000).getOrThrow()
+        assertEquals("secret-token-value", attachment.token)
+        assertFalse("attachment: $attachment", attachment.toString().contains("secret-token-value"))
+        assertTrue(attachment.toString().contains(BoundIntegrityToken.HEADER_NAME))
     }
 }
 

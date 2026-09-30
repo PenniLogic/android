@@ -1,6 +1,7 @@
 package com.pennilogic.android.platform.capture
 
 import android.content.Context
+import android.os.Build
 import androidx.test.core.app.ApplicationProvider
 import com.pennilogic.android.platform.scheduling.StandbyBucket
 import com.pennilogic.android.platform.scheduling.StopReason
@@ -14,6 +15,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 class CaptureHealthTest {
     @Test
@@ -184,6 +186,39 @@ class CaptureHealthMonitorTest {
     }
 
     @Test
+    fun `a runtime pause from a worker is recorded, replaces the reason and never clears`() {
+        signals.forceStopped = false
+        assertEquals(CaptureHealth.Healthy, monitor.onProcessStart())
+        now = 3_000
+        assertEquals(
+            CaptureHealth.Paused(PlatformCapabilityReason.STANDBY_BUCKET_RESTRICTED, 3_000),
+            monitor.onPlatformPause(PlatformCapabilityReason.STANDBY_BUCKET_RESTRICTED),
+        )
+        now = 4_000
+        assertEquals(
+            "the pause continues from its first observation under the newer reason",
+            CaptureHealth.Paused(PlatformCapabilityReason.BACKGROUND_RESTRICTED, 3_000),
+            monitor.onPlatformPause(PlatformCapabilityReason.BACKGROUND_RESTRICTED),
+        )
+        signals.clear()
+        assertEquals("a clean start never clears a pause", "paused", monitor.onProcessStart().id)
+        assertThrows(IllegalArgumentException::class.java) {
+            monitor.onPlatformPause(PlatformCapabilityReason.LISTENER_ACCESS_NOT_GRANTED)
+        }
+        assertEquals("cleared only by restoration, like every pause", CaptureHealth.Healthy, monitor.onHealthRestored())
+    }
+
+    @Test
+    fun `clearing erases the record and the private-space indicator with it`() {
+        signals.profile = ProfileKind.OTHER_PROFILE
+        signals.forceStopped = true
+        monitor.onProcessStart()
+        monitor.onBlockedBySetting(PlatformCapabilityReason.LISTENER_ACCESS_NOT_GRANTED, null)
+        assertEquals(CaptureHealth.Healthy, monitor.clear())
+        assertEquals(CaptureHealthRecord(), store.read())
+    }
+
+    @Test
     fun `the event reflects the current state and the platform bucket`() {
         signals.forceStopped = true
         signals.bucket = StandbyBucket.RESTRICTED
@@ -228,7 +263,7 @@ class PreferencesCaptureHealthStoreTest {
             )
         store.write(record)
         assertEquals(record, PreferencesCaptureHealthStore(context).read())
-        val all = context.getSharedPreferences("pennilogic.capture_health", Context.MODE_PRIVATE).all
+        val all = context.getSharedPreferences(PreferencesCaptureHealthStore.FILE, Context.MODE_PRIVATE).all
         assertEquals(
             setOf("pause_reason", "paused_since", "components_registered", "block_reason", "block_permission"),
             all.keys,
@@ -236,20 +271,40 @@ class PreferencesCaptureHealthStoreTest {
         store.write(CaptureHealthRecord())
         assertEquals(CaptureHealthRecord(), store.read())
     }
+
+    @Test
+    fun `clear erases every key of the file`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val store = PreferencesCaptureHealthStore(context)
+        val record =
+            CaptureHealthRecord(pauseReason = PlatformCapabilityReason.PRIVATE_SPACE_PAUSED, pausedSinceMillis = 9)
+        store.write(record)
+        store.clear()
+        assertEquals(CaptureHealthRecord(), PreferencesCaptureHealthStore(context).read())
+        assertTrue(context.getSharedPreferences(PreferencesCaptureHealthStore.FILE, Context.MODE_PRIVATE).all.isEmpty())
+    }
 }
 
+/**
+ * The API-level guards of the platform reader, executed on the QA runtimes: below 35 there is no
+ * `ApplicationStartInfo`, below 33 no `UserManager.isProfile`; every read returns instead of throwing.
+ */
 @RunWith(RobolectricTestRunner::class)
+@Config(sdk = [31, 33, 35, 36])
 class AndroidPlatformSignalsTest {
     @Test
-    fun `platform signals never throw and report the runtime`() {
+    fun `platform signals follow the runtime api level and never throw`() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val signals = AndroidPlatformSignals(context)
-        assertEquals(36, signals.apiLevel)
-        signals.wasForceStopped()
+        val sdk = Build.VERSION.SDK_INT
+        assertEquals(sdk, signals.apiLevel)
+        val forceStopped = signals.wasForceStopped()
+        if (sdk < 35) assertNull("no ApplicationStartInfo below API 35 (sdk $sdk)", forceStopped)
         signals.lastExitReason()
-        assertEquals(ProfileKind.PERSONAL, signals.profileKind())
-        signals.standbyBucket()
+        assertEquals("sdk $sdk", ProfileKind.PERSONAL, signals.profileKind())
+        val (bucket, raw) = signals.standbyBucket()
+        assertEquals("sdk $sdk", StandbyBucket.fromPlatform(raw), bucket)
         assertFalse(signals.isBackgroundRestricted())
-        assertNull("a fresh Robolectric process has no detectable pause", TrackingPauseDetector(signals).detect())
+        assertNull("a fresh process has no detectable pause (sdk $sdk)", TrackingPauseDetector(signals).detect())
     }
 }

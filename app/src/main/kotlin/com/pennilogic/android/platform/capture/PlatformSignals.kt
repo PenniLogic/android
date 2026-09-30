@@ -30,11 +30,15 @@ interface PlatformSignals {
 
     /**
      * True when this is the first process start after the app was force-stopped (API 35+, from
-     * `ApplicationStartInfo.wasForceStopped()`); null when the platform cannot say.
+     * `ApplicationStartInfo.wasForceStopped()`); null when the platform cannot say (below API 35).
+     * A non-null answer decides the force-stop case alone.
      */
     fun wasForceStopped(): Boolean?
 
-    /** `ApplicationExitInfo.getReason()` of the most recent exit of this app (API 30+), or null. */
+    /**
+     * `ApplicationExitInfo.getReason()` of the most recent exit of this app (API 30+), or null. Only
+     * `REASON_USER_STOPPED` (profile stopped) is read as a stop; see [TrackingPauseDetector].
+     */
     fun lastExitReason(): Int?
 
     fun profileKind(): ProfileKind
@@ -90,7 +94,12 @@ class AndroidPlatformSignals(
     }
 
     companion object {
-        /** `ApplicationExitInfo.REASON_USER_REQUESTED` (API 30): force-stop from settings or a similar user request. */
+        /**
+         * `ApplicationExitInfo.REASON_USER_REQUESTED` (API 30). Documented by Android as a force-stop
+         * **or** a swipe from Recents (before API 34 also an app update) with no public sub-reason, so
+         * [TrackingPauseDetector] does not read it as a stop; kept as the named value the documents and
+         * tests refer to.
+         */
         const val REASON_USER_REQUESTED: Int = 10
 
         /** `ApplicationExitInfo.REASON_USER_STOPPED` (API 30): the user profile the app ran in was stopped. */

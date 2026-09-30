@@ -28,7 +28,7 @@ class IntegrityVerdictPolicyTest {
     private fun evaluate(
         verdict: DecodedVerdict,
         expectation: VerdictExpectation = this.expectation,
-        registry: ReplayRegistry = InMemoryReplayRegistry(retentionMillis = 60 * 60 * 1000),
+        registry: ReplayRegistry = InMemoryReplayRegistry.covering(expectation),
     ) = IntegrityVerdictPolicy.evaluate(verdict, expectation, registry)
 
     @Test
@@ -88,22 +88,48 @@ class IntegrityVerdictPolicyTest {
     }
 
     @Test
-    fun `a replayed token fails closed and the registry forgets only after retention`() {
-        val registry = InMemoryReplayRegistry(retentionMillis = 1_000)
-        assertEquals(IntegrityDecision.Allow, evaluate(verdict(), registry = registry))
-        assertEquals(IntegrityDecision.Deny(VerdictRejection.REPLAYED), evaluate(verdict(), registry = registry))
+    fun `a replayed token fails closed for as long as it is fresh`() {
+        val registry = InMemoryReplayRegistry.covering(expectation)
+        val presented = verdict()
+        assertEquals(IntegrityDecision.Allow, evaluate(presented, registry = registry))
+        assertEquals(IntegrityDecision.Deny(VerdictRejection.REPLAYED), evaluate(presented, registry = registry))
         assertEquals(
             "a different token for the same request is not a replay",
             IntegrityDecision.Allow,
             evaluate(verdict(tokenId = "token-2"), registry = registry),
         )
-        val later = expectation.copy(nowMillis = now + 1_001)
+        // The same token again at the very end of its freshness window: still fresh, still refused.
+        val lastFreshMoment = expectation.copy(nowMillis = presented.timestampMillis + expectation.maxAgeMillis)
         assertEquals(
-            "after retention the token is old anyway, so freshness must catch it",
-            IntegrityDecision.Allow,
-            evaluate(verdict(timestampMillis = now + 1_000), later, registry),
+            IntegrityDecision.Deny(VerdictRejection.REPLAYED),
+            evaluate(presented, lastFreshMoment, registry),
         )
-        assertTrue(later.maxAgeMillis >= 1_000)
+        // Once the token is stale, freshness refuses it, whether or not the registry still remembers it.
+        val stale = expectation.copy(nowMillis = presented.timestampMillis + expectation.maxAgeMillis + 1)
+        assertEquals(IntegrityDecision.Deny(VerdictRejection.EXPIRED), evaluate(presented, stale, registry))
+    }
+
+    @Test
+    fun `a registry whose retention does not cover the freshness window is refused before any row`() {
+        val tooShort = InMemoryReplayRegistry(retentionMillis = 1_000)
+        assertThrows(IllegalArgumentException::class.java) { evaluate(verdict(), registry = tooShort) }
+        val justShort =
+            InMemoryReplayRegistry(retentionMillis = expectation.maxAgeMillis + expectation.clockSkewMillis - 1)
+        assertThrows(IllegalArgumentException::class.java) { evaluate(verdict(), registry = justShort) }
+        val exact = InMemoryReplayRegistry(retentionMillis = expectation.maxAgeMillis + expectation.clockSkewMillis)
+        assertEquals(IntegrityDecision.Allow, evaluate(verdict(), registry = exact))
+        assertEquals(
+            "the covering registry is exactly the freshness window",
+            expectation.maxAgeMillis + expectation.clockSkewMillis,
+            InMemoryReplayRegistry.covering(expectation).retentionMillis,
+        )
+        assertThrows(IllegalArgumentException::class.java) { InMemoryReplayRegistry(retentionMillis = 0) }
+    }
+
+    @Test
+    fun `a verdict without a token identity cannot reach the registry`() {
+        assertThrows(IllegalArgumentException::class.java) { verdict(tokenId = "") }
+        assertThrows(IllegalArgumentException::class.java) { verdict(tokenId = "   ") }
     }
 
     @Test

@@ -10,10 +10,11 @@ import org.junit.Test
 
 /**
  * Proves the drain invariants against a fake server that applies each idempotency key once: a quota
- * stop mid-batch, a process crash before or after every queue operation and every send, coroutine
- * cancellation, a lease takeover by a second owner, rejected and repeatedly retried items. In every
- * scenario each queued item is applied exactly once and the queue ends empty: nothing lost, nothing
- * duplicated.
+ * stop mid-batch, any number of stops before a single send, a process crash before and after every
+ * queue operation the drain actually performs (claim, ack, release, retryLater, deadLetter,
+ * expireLeases) and every send, coroutine cancellation, a lease takeover by a second owner, rejected
+ * and repeatedly retried items. In every scenario each queued item is applied exactly once or parked
+ * as a dead letter with its payload, and no live item remains: nothing lost, nothing duplicated.
  */
 class QueueDrainerTest {
     /** Simulated process death: an Error, because a dying process throws nothing the drainer could catch. */
@@ -27,13 +28,15 @@ class QueueDrainerTest {
         var crashBeforeSend: Int? = null
         var crashAfterSend: Int? = null
         var rejectKeys: Set<String> = emptySet()
-        var retryKeys: Set<String> = emptySet()
+
+        /** Keys answered with one `Retry` on their first send, then accepted. */
+        val retryOnce = mutableSetOf<String>()
 
         fun send(item: QueuedItem<String>): SendResult {
             sends++
             if (sends == crashBeforeSend) throw ProcessCrash()
             if (item.key in rejectKeys) return SendResult.Rejected("schema")
-            if (item.key in retryKeys) return SendResult.Retry()
+            if (retryOnce.remove(item.key)) return SendResult.Retry()
             receipts[item.key] = (receipts[item.key] ?: 0) + 1
             applied.add(item.key)
             if (sends == crashAfterSend) throw ProcessCrash()
@@ -41,23 +44,26 @@ class QueueDrainerTest {
         }
     }
 
-    /** Dies before or after the nth call of one operation; every other call passes through. */
-    private class CrashingQueue<T>(
+    private data class CrashPlan(
+        val operation: String,
+        val nth: Int,
+        val after: Boolean,
+    )
+
+    /** Counts every queue operation and dies before or after the nth call of the planned one. */
+    private class InstrumentedQueue<T>(
         private val delegate: DurableQueue<T>,
-        private val operation: String,
-        private val nth: Int,
-        private val after: Boolean,
+        private val plan: CrashPlan?,
     ) : DurableQueue<T> {
-        private val counts = HashMap<String, Int>()
+        val calls = LinkedHashMap<String, Int>()
 
         private fun before(name: String) {
-            if (name != operation || after) return
-            if (counts.merge(name, 1, Int::plus) == nth) throw ProcessCrash()
+            val count = calls.merge(name, 1, Int::plus)
+            if (plan != null && plan.operation == name && plan.nth == count && !plan.after) throw ProcessCrash()
         }
 
         private fun afterwards(name: String) {
-            if (name != operation || !after) return
-            if (counts.merge(name, 1, Int::plus) == nth) throw ProcessCrash()
+            if (plan != null && plan.operation == name && plan.nth == calls[name] && plan.after) throw ProcessCrash()
         }
 
         override suspend fun enqueue(
@@ -87,19 +93,28 @@ class QueueDrainerTest {
         override suspend fun release(
             key: String,
             owner: String,
-            retryNotBeforeMillis: Long?,
         ): Boolean {
             before("release")
-            return delegate.release(key, owner, retryNotBeforeMillis).also { afterwards("release") }
+            return delegate.release(key, owner).also { afterwards("release") }
+        }
+
+        override suspend fun retryLater(
+            key: String,
+            owner: String,
+            notBeforeMillis: Long,
+        ): Boolean {
+            before("retryLater")
+            return delegate.retryLater(key, owner, notBeforeMillis).also { afterwards("retryLater") }
         }
 
         override suspend fun deadLetter(
             key: String,
             owner: String,
             reason: String,
+            nowMillis: Long,
         ): Boolean {
             before("deadLetter")
-            return delegate.deadLetter(key, owner, reason).also { afterwards("deadLetter") }
+            return delegate.deadLetter(key, owner, reason, nowMillis).also { afterwards("deadLetter") }
         }
 
         override suspend fun expireLeases(nowMillis: Long): Int {
@@ -108,7 +123,37 @@ class QueueDrainerTest {
         }
 
         override suspend fun snapshot(): QueueSnapshot = delegate.snapshot()
+
+        override suspend fun deadLetters(): List<DeadLetter<T>> = delegate.deadLetters()
     }
+
+    /** A first drain shaped so that a given set of queue operations is reached, and what it must leave behind. */
+    private class Scenario(
+        val name: String,
+        val expectedDeadLettered: Set<String>,
+        val configure: (FakeServer) -> Unit,
+        val stopSignal: (FakeServer) -> (() -> StopReason?),
+    )
+
+    private val scenarios =
+        listOf(
+            Scenario("every send succeeds", emptySet(), configure = {}, stopSignal = { { null } }),
+            Scenario(
+                "one transient retry and one rejection",
+                expectedDeadLettered = setOf("txn-5"),
+                configure = {
+                    it.retryOnce += "txn-3"
+                    it.rejectKeys = setOf("txn-5")
+                },
+                stopSignal = { { null } },
+            ),
+            Scenario(
+                "quota stop after the first send",
+                emptySet(),
+                configure = {},
+                stopSignal = { server -> { if (server.sends >= 1) StopReason.QUOTA else null } },
+            ),
+        )
 
     private val keys = (1..7).map { "txn-$it" }
 
@@ -168,30 +213,93 @@ class QueueDrainerTest {
         }
 
     @Test
-    fun `a crash before or after any queue operation or send loses nothing and applies each item once`() =
+    fun `ten quota stops before any send then one transient retry keep the head item queued once`() =
         runTest {
-            val plans =
-                buildList {
-                    for (operation in listOf("claim", "ack", "expireLeases")) {
-                        for (nth in 1..keys.size) {
-                            add(Triple(operation, nth, false))
-                            add(Triple(operation, nth, true))
+            val queue = seeded()
+            val server = FakeServer()
+            var now = 10_000L
+            repeat(10) { round ->
+                var polls = 0
+                // Poll 1 is before the claim, poll 2 before the first send: the whole batch goes back unsent.
+                val outcome =
+                    drainer(queue, server, "run-$round", { now }, maxAttempts = 2).drain {
+                        if (++polls == 2) StopReason.QUOTA else null
+                    }
+                val stopped = outcome as DrainOutcome.Stopped
+                assertEquals(0, stopped.sent)
+                assertEquals(3, stopped.released)
+                assertEquals(keys.toSet(), queue.snapshot().pending)
+                now += 1
+            }
+            assertEquals(0, server.sends)
+            val head = queue.claim("peek", 1, now, LEASE).single()
+            assertEquals("txn-1", head.key)
+            assertEquals("ten stops spent no attempt", 0, head.attempts)
+            assertTrue(queue.release("txn-1", "peek"))
+
+            server.retryOnce += "txn-1"
+            val retried = drainer(queue, server, "run-retry", { now }, maxAttempts = 2).drain { null }
+            assertEquals(DrainOutcome.Drained(sent = 6, deadLettered = 0, retryLater = 1), retried)
+            assertEquals("still queued, not parked", setOf("txn-1"), queue.snapshot().pending)
+            assertEquals(emptySet<String>(), queue.snapshot().deadLettered)
+
+            now += QueueDrainer.exponentialBackoffMillis(1)
+            assertEquals(
+                DrainOutcome.Drained(1, 0, 0),
+                drainer(queue, server, "run-final", { now }, maxAttempts = 2).drain { null },
+            )
+            assertExactlyOnce(server, queue)
+        }
+
+    @Test
+    fun `a crash before or after every queue operation the drain performs loses nothing`() =
+        runTest {
+            for (scenario in scenarios) {
+                // Record which operations the first drain of this scenario performs, and how often.
+                val recording = InstrumentedQueue(seeded(), plan = null)
+                val recordingServer = FakeServer().also(scenario.configure)
+                drainer(recording, recordingServer, "rec", { 10_000L }).drain(scenario.stopSignal(recordingServer))
+                val plans =
+                    recording.calls.flatMap { (operation, count) ->
+                        (1..count).flatMap { nth ->
+                            listOf(CrashPlan(operation, nth, false), CrashPlan(operation, nth, true))
                         }
                     }
+                assertTrue("${scenario.name}: plans", plans.isNotEmpty())
+
+                for (plan in plans) {
+                    val queue = seeded()
+                    val server = FakeServer().also(scenario.configure)
+                    var now = 10_000L
+                    val crashed =
+                        runCatching {
+                            drainer(InstrumentedQueue(queue, plan), server, "run-1", { now })
+                                .drain(scenario.stopSignal(server))
+                        }.exceptionOrNull() is ProcessCrash
+                    assertTrue("${scenario.name}: $plan must crash where planned", crashed)
+                    now = recover(queue, server, now)
+                    assertExactlyOnce(server, queue, "${scenario.name}: $plan", scenario.expectedDeadLettered)
                 }
-            for ((operation, nth, after) in plans) {
-                val queue = seeded()
-                val server = FakeServer()
-                var now = 10_000L
-                val crashed =
-                    runCatching {
-                        drainer(CrashingQueue(queue, operation, nth, after), server, "run-1", { now }).drain { null }
-                    }.exceptionOrNull() is ProcessCrash
-                // Restart: leases outlive the dead owner and expire before the next drain.
-                now += LEASE + 1
-                drainer(queue, server, "run-2", { now }).drain { null }
-                assertExactlyOnce(server, queue, "plan=$operation#$nth after=$after crashed=$crashed")
             }
+            val covered =
+                scenarios
+                    .map { scenario ->
+                        val recording = InstrumentedQueue(seeded(), plan = null)
+                        val server = FakeServer().also(scenario.configure)
+                        drainer(recording, server, "rec", { 10_000L }).drain(scenario.stopSignal(server))
+                        recording.calls.keys
+                    }.flatten()
+                    .toSet()
+            assertEquals(
+                "every mutating queue operation is crash-covered by some scenario",
+                setOf("claim", "ack", "release", "retryLater", "deadLetter", "expireLeases"),
+                covered,
+            )
+        }
+
+    @Test
+    fun `a crash before or after every send loses nothing and re-sends only the item in flight`() =
+        runTest {
             for (send in 1..keys.size) {
                 for (afterSend in listOf(false, true)) {
                     val queue = seeded()
@@ -199,18 +307,12 @@ class QueueDrainerTest {
                     var now = 10_000L
                     val crashed =
                         runCatching {
-                            drainer(
-                                queue,
-                                server,
-                                "run-1",
-                                { now },
-                            ).drain { null }
+                            drainer(queue, server, "run-1", { now }).drain { null }
                         }.exceptionOrNull() is ProcessCrash
                     assertTrue("send crash $send/$afterSend must happen", crashed)
                     server.crashAfterSend = null
                     server.crashBeforeSend = null
-                    now += LEASE + 1
-                    drainer(queue, server, "run-2", { now }).drain { null }
+                    now = recover(queue, server, now)
                     assertExactlyOnce(server, queue, "sendCrash=$send after=$afterSend")
                     val resent = server.receipts.count { it.value > 1 }
                     assertEquals("only the item in flight at the crash is re-sent", if (afterSend) 1 else 0, resent)
@@ -245,6 +347,8 @@ class QueueDrainerTest {
             val snapshot = queue.snapshot()
             assertEquals(emptySet<String>(), snapshot.inFlight)
             assertEquals(keys.toSet(), snapshot.pending)
+            val attempts = queue.claim("peek", 7, 10_001, LEASE).sumOf { it.attempts }
+            assertEquals("a cancellation spends no attempt", 0, attempts)
         }
 
     @Test
@@ -267,13 +371,13 @@ class QueueDrainerTest {
         }
 
     @Test
-    fun `rejected items are dead-lettered once and retried items back off then dead-letter at the limit`() =
+    fun `rejected items are parked once and retried items back off then park at the limit with their payload`() =
         runTest {
             val queue = seeded()
             val server =
                 FakeServer().apply {
                     rejectKeys = setOf("txn-2")
-                    retryKeys = setOf("txn-5")
+                    retryOnce += "txn-5"
                 }
             var now = 10_000L
             val first = drainer(queue, server, "run-1", { now }, maxAttempts = 2).drain { null }
@@ -286,16 +390,22 @@ class QueueDrainerTest {
                 queue.claim("peek", 10, now, LEASE).map { it.key },
             )
             now += QueueDrainer.exponentialBackoffMillis(1)
+            server.retryOnce += "txn-5"
             val second = drainer(queue, server, "run-2", { now }, maxAttempts = 2).drain { null }
             assertEquals(
-                "second retry exhausts the two attempts",
+                "the second failed send exhausts the two attempts",
                 DrainOutcome.Drained(sent = 0, deadLettered = 1, retryLater = 0),
                 second,
             )
             assertEquals(setOf("txn-2", "txn-5"), queue.snapshot().deadLettered)
-            assertEquals("max_attempts", queue.deadLetterReason("txn-5"))
+            assertEquals(QueueDrainer.MAX_ATTEMPTS_REASON, queue.deadLetterReason("txn-5"))
             assertTrue(queue.snapshot().isEmpty)
             assertEquals(keys.toSet() - setOf("txn-2", "txn-5"), server.applied)
+            val parked = queue.deadLetters().associateBy { it.item.key }
+            assertEquals("payload:txn-2", parked.getValue("txn-2").item.payload)
+            assertEquals("payload:txn-5", parked.getValue("txn-5").item.payload)
+            assertEquals("both failed sends are on record", 1, parked.getValue("txn-5").item.attempts)
+            assertEquals(now, parked.getValue("txn-5").deadLetteredAtMillis)
         }
 
     @Test
@@ -337,15 +447,37 @@ class QueueDrainerTest {
         assertEquals(30_000, QueueDrainer.exponentialBackoffMillis(0))
     }
 
+    /**
+     * Restart after a crash or stop: leases outlive the dead owner and expire, backoffs elapse, and
+     * fresh drains run until nothing is pending or in flight. Returns the advanced clock.
+     */
+    private suspend fun recover(
+        queue: DurableQueue<String>,
+        server: FakeServer,
+        start: Long,
+    ): Long {
+        var now = start
+        repeat(4) { round ->
+            now += LEASE + 1
+            drainer(queue, server, "recovery-$round", { now }).drain { null }
+            if (queue.snapshot().isEmpty) return now
+        }
+        return now
+    }
+
     private suspend fun assertExactlyOnce(
         server: FakeServer,
         queue: DurableQueue<String>,
         context: String = "",
+        deadLettered: Set<String> = emptySet(),
     ) {
-        assertEquals("every item applied ($context)", keys.toSet(), server.applied)
+        assertEquals("every deliverable item applied ($context)", keys.toSet() - deadLettered, server.applied)
         server.receipts.forEach { (key, count) -> assertTrue("$key received $count times ($context)", count in 1..2) }
-        assertTrue("queue empty ($context): ${queue.snapshot()}", queue.snapshot().isEmpty)
-        assertEquals("nothing dead-lettered ($context)", emptySet<String>(), queue.snapshot().deadLettered)
+        assertTrue("no live item left ($context): ${queue.snapshot()}", queue.snapshot().isEmpty)
+        assertEquals("dead letters ($context)", deadLettered, queue.snapshot().deadLettered)
+        queue.deadLetters().forEach { parked ->
+            assertEquals("payload retained ($context)", "payload:${parked.item.key}", parked.item.payload)
+        }
     }
 
     private companion object {

@@ -143,14 +143,14 @@ JobScheduler and WorkManager stop jobs for quota, standby and timeout reasons th
 | 35 | JobScheduler.getPendingJobReason(jobId) explains why a job is pending. |
 | 36 | Runtime quota also applies to jobs started in the top state and to jobs running alongside a foreground service; active-bucket apps get a generous but enforced quota; abandoned jobs receive STOP_REASON_TIMEOUT_ABANDONED; getPendingJobReasons(jobId) and getPendingJobReasonsHistory(jobId) list every reason. |
 
-**App handling.** StopReason models the JobParameters/WorkInfo constants including STOP_REASON_TIMEOUT_ABANDONED; StopReasonPolicy maps each category to a disposition that always releases claimed items; QueueDrainer drains a DurableQueue in leased batches, polls the stop signal before every claim and send, releases unsent items on a stop or cancellation and acknowledges only confirmed sends, so a quota stop neither loses nor duplicates queued work; QueueDrainWorker is the WorkManager base worker that reads ListenableWorker.getStopReason() (API 31+) and logs the capture_health event. Capture stays a listener, so a quota stop never pauses capture.
+**App handling.** StopReason models the JobParameters/WorkInfo constants including STOP_REASON_TIMEOUT_ABANDONED; StopReasonPolicy maps each category to a disposition that always gives claimed items back; QueueDrainer drains a DurableQueue in leased batches, polls the stop signal before every claim and send, gives unsent items back on a stop or cancellation through DurableQueue.release (which counts no attempt, so any number of platform stops can never exhaust the attempt limit; only a completed send the server asked to retry counts, through retryLater) and acknowledges only confirmed sends; an item the server rejects or that fails maxAttempts sends is parked as a dead letter with its payload, never deleted; dead-letter reasons are identifiers, never free server text. QueueDrainWorker is the WorkManager base worker that reads ListenableWorker.getStopReason() (API 31+) and logs the capture_health event. Capture stays a listener, so a quota stop never pauses capture.
 
 **Evidence.**
 
 - StopReasonTest: platform values, categories, dispositions (JVM, CI, both variants)
-- DurableQueueContractTest: at most one copy per key, leases, owner-checked ack/release, lease expiry (JVM, CI)
-- QueueDrainerTest: quota stop mid-batch, crash before/after every claim/ack/expireLeases and every send, cancellation mid-send, lease takeover, rejection and retry limits: every item applied exactly once, queue empty (JVM, CI)
-- WorkerResultMapperTest and QueueDrainWorkerTest: result mapping never fails a chain; real CoroutineWorker run through work-testing on Robolectric SDK 36 (CI)
+- DurableQueueContractTest: at most one copy per key, leases, owner-checked ack/release/retryLater/deadLetter, unsent give-back counts no attempt however often, lease expiry counts an expiry not an attempt, dead letters retained with payload, identifier-only reasons (JVM, CI)
+- QueueDrainerTest: quota stop mid-batch; ten quota stops then one transient retry keep the head item queued once with zero attempts spent; crash before/after every queue operation the drain performs (plans derived from recorded call counts across success, retry+reject and quota-stop scenarios, each asserted to crash) and every send; cancellation mid-send; lease takeover; rejection and retry limits with payload retained (JVM, CI)
+- WorkerResultMapperTest and QueueDrainWorkerTest: result mapping never fails a chain; real CoroutineWorker through work-testing on Robolectric SDK 36 on the happy path, the polled quota-stop path and the cancellation path (CI)
 
 Source: https://developer.android.com/about/versions/16/behavior-changes-all
 
@@ -181,18 +181,19 @@ A force-stopped app must show tracking paused until capture health is restored.
 
 | API | Platform behaviour |
 | --- | --- |
-| 31 | Force-stop puts the package in the stopped state (receivers and jobs off until the user opens the app); detectable afterwards only through ApplicationExitInfo.REASON_USER_REQUESTED (API 30+). |
+| 31 | Force-stop puts the package in the stopped state (receivers and jobs off until the user opens the app). ApplicationExitInfo (API 30+) reports REASON_USER_REQUESTED for a force-stop but also for a swipe from Recents and (before API 34) an app update, with no public sub-reason: a force-stop is not distinguishable with public APIs on this level. |
 | 33 | Same as 31. |
-| 35 | ApplicationStartInfo.wasForceStopped() reports the first start after a force-stop; entering the stopped state also cancels all pending intents. |
+| 35 | ApplicationStartInfo.wasForceStopped() reports the first start after a force-stop precisely; entering the stopped state also cancels all pending intents. |
 | 36 | Same as 35; ApplicationStartInfo.getStartComponent() distinguishes what started the process. |
 
-**App handling.** TrackingPauseDetector: ApplicationStartInfo.wasForceStopped() on API 35+, ApplicationExitInfo REASON_USER_REQUESTED/REASON_USER_STOPPED on API 30+, nothing below 30. CaptureHealthMonitor records capture_paused_by_platform / force_stopped and keeps it until the capture components are registered again and a health probe succeeds; a process start alone never clears it. Record persisted by PreferencesCaptureHealthStore (identifiers and timestamps only).
+**App handling.** TrackingPauseDetector: ApplicationStartInfo.wasForceStopped() on API 35+ decides the force-stop case on its own (false is not a force-stop, whatever the last exit reason says); ApplicationExitInfo.REASON_USER_STOPPED (the profile the app ran in was stopped) is honoured on every level from 30; REASON_USER_REQUESTED is deliberately not read as a stop because it also covers a swipe from Recents, so on API 30-34 a force-stop is not detectable and capture health is re-probed at start instead, as below API 30 (recorded limitation for T-QA-12). CaptureHealthMonitor records capture_paused_by_platform / force_stopped and keeps it until the capture components are registered again and a health probe succeeds; a process start alone never clears it; a runtime pause seen by a drain worker is recorded through onPlatformPause. Record persisted by PreferencesCaptureHealthStore (identifiers and timestamps only; erased by clear()).
 
 **Evidence.**
 
-- TrackingPauseDetectorTest: API 35/36 start info, API 30-34 exit reason, below 30 nothing (JVM, CI)
-- CaptureHealthMonitorTest: after a force-stop the app shows tracking paused until capture health is restored; a new start voids the previous registration (JVM, CI)
-- PreferencesCaptureHealthStoreTest and AndroidPlatformSignalsTest (Robolectric SDK 36, CI)
+- TrackingPauseDetectorTest: start-info answer decides, swipe from Recents (false + REASON_USER_REQUESTED) is no pause, REASON_USER_REQUESTED without start info is inconclusive, REASON_USER_STOPPED on every level, below 30 nothing (JVM, CI)
+- AndroidPlatformSignalsTest: the reader's API-level guards on the SDK 31, 33, 35 and 36 runtimes (Robolectric, CI)
+- CaptureHealthMonitorTest: after a force-stop the app shows tracking paused until capture health is restored; a new start voids the previous registration; runtime pauses recorded; clear() erases (JVM, CI)
+- PreferencesCaptureHealthStoreTest: exact key set, round trip, clear() (Robolectric SDK 36, CI)
 
 Source: https://developer.android.com/about/versions/15/behavior-changes-all
 
@@ -265,12 +266,12 @@ Standard Play Integrity requests bind a token to the protected request.
 | 35 | Same as 31. |
 | 36 | Same as 31. |
 
-**App handling.** ProtectedRequest + IntegrityRequestBinding compute the base64url SHA-256 request hash (43 chars, under the 500-byte limit) over method, path, body digest, account scope, nonce and issue time; StandardIntegrityClient asks the provider for a token bound to that hash and distrusts a mismatched answer; BoundIntegrityToken attaches once, refuses a different request, a second use or a stale token and burns itself; IntegrityVerdictPolicy is the executable fail-closed reference table (wrong package, wrong request, expired, future-dated, replayed, unrecognised, basic-only, unlicensed all deny) that the api repository implements server-side; ClassicRequestRegistry reserves nothing and requires risk + budget for any future reservation; PlayStandardIntegrityTokenProvider is the Play adapter behind the interface (not exercised in tests).
+**App handling.** ProtectedRequest + IntegrityRequestBinding compute the base64url SHA-256 request hash (43 chars, under the 500-byte limit) over method, path, body digest, account scope, nonce and issue time; no field may contain a control character, which makes the newline-delimited canonical form injective; the client nonce is not a replay defence. StandardIntegrityClient asks the provider for a token bound to that hash and distrusts a mismatched answer; BoundIntegrityToken attaches once, refuses a different request, a second use or a stale token and burns itself; no toString() prints the raw token. IntegrityVerdictPolicy is the executable fail-closed reference table (wrong package, wrong request, expired, future-dated, replayed, unrecognised, basic-only, unlicensed all deny) that PenniLogic/api#86 implements server-side; it refuses a replay registry whose retention does not cover maxAge + clockSkew, so a token cannot be forgotten while still fresh; the operation policy for adverse or unavailable verdicts is T-SEC-05 (android#27). ClassicRequestRegistry reserves nothing and requires risk + budget for any future reservation; PlayStandardIntegrityTokenProvider is the Play adapter behind the interface (not exercised in tests).
 
 **Evidence.**
 
-- IntegrityRequestBindingTest, BoundIntegrityTokenTest, StandardIntegrityClientTest: binding, single use, wrong request, expiry, unavailable provider (JVM, CI)
-- IntegrityVerdictPolicyTest: every denial row plus the Play replay-protection shape (JVM, CI)
+- IntegrityRequestBindingTest, BoundIntegrityTokenTest, StandardIntegrityClientTest: binding, control-character rule, single use, wrong request, expiry, token redaction in every toString(), unavailable provider (JVM, CI)
+- IntegrityVerdictPolicyTest: every denial row, replay refused across the whole freshness window, short-retention registry refused, blank token identity refused, the Play replay-protection shape (JVM, CI)
 - ClassicRequestRegistryTest: empty registry, reservation shape, budget ceiling (JVM, CI)
 
 Source: https://developer.android.com/google/play/integrity/standard

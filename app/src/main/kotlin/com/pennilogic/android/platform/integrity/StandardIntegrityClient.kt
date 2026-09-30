@@ -20,7 +20,10 @@ sealed interface IntegrityTokenResult {
         val token: String,
         val requestHash: String,
         val issuedAtMillis: Long,
-    ) : IntegrityTokenResult
+    ) : IntegrityTokenResult {
+        /** Never includes the token. */
+        override fun toString(): String = "Token(requestHash=$requestHash, issuedAtMillis=$issuedAtMillis)"
+    }
 
     data class Unavailable(
         val cause: IntegrityUnavailable,
@@ -54,7 +57,10 @@ data class IntegrityAttachment(
     val headerName: String,
     val token: String,
     val requestHash: String,
-)
+) {
+    /** Never includes the token, so an interceptor's or caller's log line cannot leak it. */
+    override fun toString(): String = "IntegrityAttachment(headerName=$headerName, requestHash=$requestHash)"
+}
 
 /**
  * A token bound to exactly one [ProtectedRequest], attachable exactly once, within [ttlMillis] of
@@ -122,8 +128,9 @@ class TokenRejectedException(
 /**
  * Standard-request client: computes the binding for a request, asks the provider for a token bound
  * to it and hands back a single-use [BoundIntegrityToken]. When Play cannot provide a token the result
- * says so and the caller's operation policy (owned by `T-SEC-05`) decides what the action may do
- * without a verdict; this client never fabricates a token or downgrades to an unbound one.
+ * says so and the caller's operation policy (owned by `T-SEC-05`, PenniLogic/android#27) decides what
+ * the action may do without a verdict; this client never fabricates a token or downgrades to an
+ * unbound one. The verdict itself is verified server-side (PenniLogic/api#86).
  */
 class StandardIntegrityClient(
     private val provider: StandardIntegrityTokenProvider,

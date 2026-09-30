@@ -9,7 +9,7 @@ sealed interface DrainOutcome {
     val sent: Int
     val deadLettered: Int
 
-    /** Every eligible item was sent or dead-lettered; nothing is pending for now. */
+    /** Every eligible item was sent or parked as a dead letter (payload retained); nothing is pending for now. */
     data class Drained(
         override val sent: Int,
         override val deadLettered: Int,
@@ -33,11 +33,15 @@ sealed interface DrainOutcome {
  *
  * The invariants, proven by `QueueDrainerTest`: an item is sent only while this drainer holds its
  * lease; a sent item is acknowledged only after the sender confirmed it; a sender that throws is a
- * retry with backoff, never a lost item or a failed run; a stop signal releases every
- * claimed-but-unsent item before returning; coroutine cancellation (the scheduler stopping the
- * worker) releases the claimed items too; a crash at any point leaves items leased, and the next drain
- * returns them to pending through [DurableQueue.expireLeases] and re-sends them under the same
- * idempotency key, which the server deduplicates. The drainer never reads the payload.
+ * retry with backoff, never a lost item or a failed run; a stop signal gives every claimed-but-unsent
+ * item back through [DurableQueue.release] before returning, which counts no attempt, so any number
+ * of platform stops can never bring an item closer to the attempt limit — only a completed send the
+ * server asked to retry does ([DurableQueue.retryLater]); coroutine cancellation (the scheduler
+ * stopping the worker) gives the claimed items back the same way, under `NonCancellable`; a crash at
+ * any point leaves items leased, and the next drain returns them to pending through
+ * [DurableQueue.expireLeases] and re-sends them under the same idempotency key, which the server
+ * deduplicates; an item the server rejects for good, or that fails [maxAttempts] sends, is parked as a
+ * dead letter with its payload, never deleted. The drainer never reads the payload.
  */
 class QueueDrainer<T>(
     private val queue: DurableQueue<T>,
@@ -72,7 +76,8 @@ class QueueDrainer<T>(
             for ((index, item) in batch.withIndex()) {
                 val stop = stopReason()
                 if (stop != null) {
-                    val released = releaseAll(batch.drop(index))
+                    // The give-back must complete even if the scheduler cancels the coroutine meanwhile.
+                    val released = withContext(NonCancellable) { releaseAll(batch.drop(index)) }
                     return stopped(stop, sent, deadLettered, released)
                 }
                 val result =
@@ -96,11 +101,12 @@ class QueueDrainer<T>(
                     }
 
                     is SendResult.Retry -> {
+                        // This send completed and failed: it counts. Stops and expiries never reach here.
                         if (item.attempts + 1 >= maxAttempts) {
-                            queue.deadLetter(item.key, owner, "max_attempts")
+                            queue.deadLetter(item.key, owner, MAX_ATTEMPTS_REASON, clock())
                             deadLettered++
                         } else {
-                            queue.release(
+                            queue.retryLater(
                                 item.key,
                                 owner,
                                 result.notBeforeMillis ?: clock() + backoffMillis(item.attempts + 1),
@@ -110,7 +116,7 @@ class QueueDrainer<T>(
                     }
 
                     is SendResult.Rejected -> {
-                        queue.deadLetter(item.key, owner, result.reason)
+                        queue.deadLetter(item.key, owner, result.reason, clock())
                         deadLettered++
                     }
                 }
@@ -118,10 +124,11 @@ class QueueDrainer<T>(
         }
     }
 
+    /** Gives unsent items back: no attempt is counted, so a stop never spends the attempt budget. */
     private suspend fun releaseAll(items: List<QueuedItem<T>>): Int {
         var released = 0
         for (item in items) {
-            if (queue.release(item.key, owner, null)) released++
+            if (queue.release(item.key, owner)) released++
         }
         return released
     }
@@ -137,6 +144,9 @@ class QueueDrainer<T>(
         const val DEFAULT_BATCH_SIZE: Int = 20
         const val DEFAULT_LEASE_MILLIS: Long = 60_000
         const val DEFAULT_MAX_ATTEMPTS: Int = 8
+
+        /** Dead-letter reason when [maxAttempts] completed sends failed; an identifier like every reason. */
+        const val MAX_ATTEMPTS_REASON: String = "max_attempts"
 
         /** 30 s, 60 s, 120 s, ... capped at one hour; deterministic so tests can assert it. */
         fun exponentialBackoffMillis(attempts: Int): Long {

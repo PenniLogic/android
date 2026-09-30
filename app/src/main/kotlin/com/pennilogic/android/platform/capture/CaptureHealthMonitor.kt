@@ -10,11 +10,16 @@ import com.pennilogic.android.platform.state.PlatformCapabilityReason
  * Persists the capture-health record across process starts. Only identifiers and timestamps are
  * stored: a pause reason, when it began, whether the capture components were registered since, and a
  * blocking reason with its platform permission name. Never transaction, message or device content.
+ * [clear] is the erasure path: the sign-out / account-erasure flow calls it so the record (including
+ * a `private_space_paused` indicator and its timestamp) does not outlive the account on the device.
  */
 interface CaptureHealthStore {
     fun read(): CaptureHealthRecord
 
     fun write(record: CaptureHealthRecord)
+
+    /** Removes the whole record; a following [read] returns the empty [CaptureHealthRecord]. */
+    fun clear()
 }
 
 /** The stored record; every field is an identifier or a timestamp. */
@@ -37,9 +42,17 @@ class InMemoryCaptureHealthStore(
     override fun write(record: CaptureHealthRecord) {
         this.record = record
     }
+
+    override fun clear() {
+        record = CaptureHealthRecord()
+    }
 }
 
-/** SharedPreferences-backed store; a plain file is appropriate because the record holds no content worth protecting. */
+/**
+ * SharedPreferences-backed store in the private file `pennilogic.capture_health`; a plain file is
+ * appropriate because the record holds no content worth protecting. Excluded from backup and device
+ * transfer by the application's extraction rules; erased by [clear].
+ */
 class PreferencesCaptureHealthStore(
     context: Context,
 ) : CaptureHealthStore {
@@ -64,13 +77,18 @@ class PreferencesCaptureHealthStore(
         }
     }
 
-    private companion object {
-        const val FILE = "pennilogic.capture_health"
-        const val KEY_PAUSE_REASON = "pause_reason"
-        const val KEY_PAUSED_SINCE = "paused_since"
-        const val KEY_COMPONENTS_REGISTERED = "components_registered"
-        const val KEY_BLOCK_REASON = "block_reason"
-        const val KEY_BLOCK_PERMISSION = "block_permission"
+    override fun clear() {
+        preferences.edit { clear() }
+    }
+
+    companion object {
+        /** The persisted artefact's file name, listed in the erasure inventory of the scheduling document. */
+        const val FILE: String = "pennilogic.capture_health"
+        private const val KEY_PAUSE_REASON = "pause_reason"
+        private const val KEY_PAUSED_SINCE = "paused_since"
+        private const val KEY_COMPONENTS_REGISTERED = "components_registered"
+        private const val KEY_BLOCK_REASON = "block_reason"
+        private const val KEY_BLOCK_PERMISSION = "block_permission"
     }
 }
 
@@ -79,11 +97,17 @@ class PreferencesCaptureHealthStore(
  *
  * - [onProcessStart] records a pause the detector reports. A start on its own never clears a pause:
  *   after a force-stop the surface shows tracking paused until [onHealthRestored] is reached.
+ * - [onPlatformPause] records a pause observed at runtime — a feature's drain worker maps its stop
+ *   reason and standby bucket through `StopReasonPolicy.captureHealthReason` and reports the result
+ *   here — so a background restriction or the restricted bucket seen between starts is not missed.
+ *   Recording never clears anything either.
  * - [onCaptureComponentsRegistered] records that the capture components exist again in this process;
- *   [onHealthProbeSucceeded] then clears the pause. A probe before registration is ignored, because a
- *   healthy-looking probe from a process whose receivers are not registered proves nothing.
+ *   [onHealthProbeSucceeded] then clears the pause, whatever its reason. A probe before registration
+ *   is ignored, because a healthy-looking probe from a process whose receivers are not registered
+ *   proves nothing.
  * - [onBlockedBySetting] / [onSettingGranted] track the permission / restricted-setting side, which
  *   the taxonomy renders ahead of a pause (`permission_denied` precedes `degraded`).
+ * - [clear] erases the persisted record; the sign-out / account-erasure flow calls it.
  *
  * Every transition returns the resulting [CaptureHealth] and the monitor can render the observability
  * event for it. Transitions are serialized on the monitor, so lifecycle callbacks and workers may call
@@ -129,6 +153,27 @@ class CaptureHealthMonitor(
         return current()
     }
 
+    /**
+     * Records a pause observed at runtime (a drain worker's stop reason or standby bucket mapped by
+     * `StopReasonPolicy.captureHealthReason`). Like [onProcessStart] it never clears a pause; a new
+     * reason replaces the recorded one and the pause continues. Only pause reasons are accepted.
+     */
+    @Synchronized
+    fun onPlatformPause(reason: PlatformCapabilityReason): CaptureHealth {
+        require(reason.condition == CaptureHealthCondition.CAPTURE_PAUSED_BY_PLATFORM) {
+            "${reason.id} is not a pause reason"
+        }
+        val record = store.read()
+        val updated =
+            if (record.pauseReason == null) {
+                record.copy(pauseReason = reason, pausedSinceMillis = clock())
+            } else {
+                record.copy(pauseReason = reason)
+            }
+        store.write(updated)
+        return updated.toHealth()
+    }
+
     /** Clears a pause only when the components are registered; otherwise the pause stays. */
     @Synchronized
     fun onHealthProbeSucceeded(): CaptureHealth {
@@ -161,6 +206,13 @@ class CaptureHealthMonitor(
     @Synchronized
     fun onSettingGranted(): CaptureHealth {
         store.write(store.read().copy(blockReason = null, blockPermission = null))
+        return current()
+    }
+
+    /** Erases the persisted record (sign-out, account erasure); the result is [CaptureHealth.Healthy]. */
+    @Synchronized
+    fun clear(): CaptureHealth {
+        store.clear()
         return current()
     }
 

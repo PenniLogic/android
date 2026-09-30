@@ -9,8 +9,11 @@ import java.util.Base64
  * meaning of the request is part of the binding, so a token obtained for one request cannot be
  * attached to another: method, path, the SHA-256 of the exact body bytes, an opaque account scope
  * (a server-issued identifier, never an email or name), a client nonce that makes two otherwise
- * identical requests distinct, and the issue time. Amounts and currencies travel inside the body and
- * are covered by its digest; they are never repeated here.
+ * identical requests distinct (it is not a replay defence; the server's replay registry is), and the
+ * issue time. Amounts and currencies travel inside the body and are covered by its digest; they are
+ * never repeated here. No string field may contain a control character (below U+0020, or U+007F):
+ * the canonical form joins the fields with `\n`, and this rule is what makes it injective — two
+ * different requests can never serialize to the same bytes.
  */
 data class ProtectedRequest(
     val method: String,
@@ -27,9 +30,18 @@ data class ProtectedRequest(
         require(accountScope.isNotBlank()) { "accountScope is required" }
         require(clientNonce.length >= MIN_NONCE_LENGTH) { "clientNonce must be at least $MIN_NONCE_LENGTH characters" }
         require(issuedAtMillis > 0) { "issuedAtMillis must be positive" }
+        val textFields =
+            listOf("method" to method, "path" to path, "accountScope" to accountScope, "clientNonce" to clientNonce)
+        for ((name, value) in textFields) {
+            require(value.none { it < ' ' || it == '\u007f' }) { "$name must not contain control characters" }
+        }
     }
 
-    /** Stable canonical serialization; a change in any field changes the hash. */
+    /**
+     * Stable canonical serialization: the version tag and every field, newline-delimited. Because no
+     * field may contain a control character, the serialization is injective and a change in any field
+     * changes the hash.
+     */
     fun canonical(): String =
         listOf(
             "pennilogic-integrity-v1",

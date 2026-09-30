@@ -100,7 +100,8 @@
       "condition": "capture_paused_by_platform",
       "status": "implemented",
       "description": "The user force-stopped the app. Receivers, jobs and pending intents stay off until the user opens the app again; on Android 15+ pending intents are also cancelled.",
-      "detection": "API 35+ ApplicationStartInfo.wasForceStopped() on the first start after the stop; API 30-34 ApplicationExitInfo.getReason() == REASON_USER_REQUESTED for the last exit; below API 30 not detectable, capture health is re-probed instead.",
+      "detection": "API 35+: ApplicationStartInfo.wasForceStopped() on the first start after the stop decides on its own (true = force-stopped, false = not, whatever the last exit reason says). ApplicationExitInfo.REASON_USER_STOPPED (API 30+, the profile the app ran in was stopped) is honoured on every level. ApplicationExitInfo.REASON_USER_REQUESTED is deliberately not used: Android documents it for a force-stop or a swipe from Recents (before API 34 also an app update) and exposes no public sub-reason, so on API 30-34 a force-stop is not detectable with public APIs; like below API 30, capture health is re-probed at start instead (TrackingPauseDetector).",
+      "limitation": "API 30-34: a force-stop cannot be told apart from a swipe from Recents with public APIs and is therefore not reported; the pause is shown only when the platform can say so (API 35+) or when the profile was stopped.",
       "clears_when": "Capture health is restored: the capture components are registered again and a health probe succeeds. A process start alone never clears it."
     },
     {
@@ -108,25 +109,25 @@
       "condition": "capture_paused_by_platform",
       "status": "implemented",
       "description": "The private space holding the app was locked, which stops every app inside it and hides its notifications; nothing is captured until the space is unlocked.",
-      "detection": "Running in a non-managed profile (UserManager.isProfile() && !isManagedProfile(), API 33+) and the last exit reason was REASON_USER_STOPPED or the start reports wasForceStopped(). The public SDK cannot name the private space explicitly, so a clone profile is classified the same way.",
+      "detection": "Running in a non-managed profile (UserManager.isProfile() && !isManagedProfile(), API 33+) and the last exit reason was REASON_USER_STOPPED or the start reports wasForceStopped() == true (TrackingPauseDetector). The public SDK cannot name the private space explicitly, so a clone profile is classified the same way.",
       "clears_when": "Capture health is restored after the space is unlocked.",
-      "privacy": "Records that the user chose to run the app inside a private space, which is a concealment choice: local and aggregate-only, never joined to an account identifier, never exported by this baseline."
+      "privacy": "Records that the user chose to run the app inside a private space, which is a concealment choice: kept on the device as a per-device state record and a logcat-only event, would only ever be counted in aggregate, never joined to an account identifier, not exported by this baseline, erased with the record by CaptureHealthStore.clear()."
     },
     {
       "id": "standby_bucket_restricted",
       "condition": "capture_paused_by_platform",
       "status": "implemented",
       "description": "The app is in the restricted standby bucket, so jobs run about once a day and the capture pipeline cannot keep up.",
-      "detection": "UsageStatsManager.getAppStandbyBucket() == STANDBY_BUCKET_RESTRICTED (45).",
-      "clears_when": "The bucket improves; re-probed on each start and each job run."
+      "detection": "UsageStatsManager.getAppStandbyBucket() == STANDBY_BUCKET_RESTRICTED (45), read by TrackingPauseDetector at process start and reportable at runtime by a drain worker through StopReasonPolicy.captureHealthReason and CaptureHealthMonitor.onPlatformPause.",
+      "clears_when": "Capture health is restored: the capture components are registered in the current process and a health probe succeeds, the same path as force_stopped. A process start alone never clears it; while the bucket stays restricted the detector refreshes the reason at each start."
     },
     {
       "id": "background_restricted",
       "condition": "capture_paused_by_platform",
       "status": "implemented",
       "description": "The user applied a background restriction to the app in system settings; background work is not run.",
-      "detection": "ActivityManager.isBackgroundRestricted().",
-      "clears_when": "The restriction is lifted; re-probed on each start."
+      "detection": "ActivityManager.isBackgroundRestricted(), read by TrackingPauseDetector at process start and reportable at runtime by a drain worker (STOP_REASON_BACKGROUND_RESTRICTION) through StopReasonPolicy.captureHealthReason and CaptureHealthMonitor.onPlatformPause.",
+      "clears_when": "Capture health is restored: the capture components are registered in the current process and a health probe succeeds, the same path as force_stopped. A process start alone never clears it; while the restriction stays the detector refreshes the reason at each start."
     },
     {
       "id": "listener_access_not_granted",
@@ -147,9 +148,9 @@
     {
       "id": "capture_permission_not_granted",
       "condition": "capture_blocked_by_setting",
-      "status": "planned_pr2",
+      "status": "implemented",
       "description": "A runtime permission capture needs (SMS) is not granted.",
-      "detection": "Planned (PR 2): ContextCompat.checkSelfPermission() != PERMISSION_GRANTED for the capture permission, read by a capture-permission probe; this baseline declares and requests no such permission, so no probe exists in it.",
+      "detection": "CapturePermissionProbe: ContextCompat.checkSelfPermission(context, permission) != PERMISSION_GRANTED for the platform permission the capture feature names; reading requests nothing and shows no prompt. This baseline declares and requests no capture permission, so on this build every capture permission reads as not granted.",
       "clears_when": "The user grants the permission."
     }
   ],
@@ -168,7 +169,21 @@
         "id": "blocked",
         "condition": "capture_blocked_by_setting"
       }
-    ]
+    ],
+    "persisted_record": {
+      "store": "PreferencesCaptureHealthStore",
+      "file": "pennilogic.capture_health (SharedPreferences, MODE_PRIVATE)",
+      "keys": [
+        "pause_reason",
+        "paused_since",
+        "components_registered",
+        "block_reason",
+        "block_permission"
+      ],
+      "content": "Reason identifiers, one timestamp, one boolean and a platform permission name; never an account identifier, device identifier, package list, transaction or message content.",
+      "backup": "Excluded from cloud backup and device transfer by res/xml/data_extraction_rules.xml and res/xml/backup_rules.xml (allowBackup is false).",
+      "erasure": "CaptureHealthStore.clear() / CaptureHealthMonitor.clear() removes every key; the sign-out and account-erasure flow of the account ticket calls it so the record, including a private_space_paused indicator and its timestamp, does not outlive the account on the device."
+    }
   },
   "observability": {
     "event": "capture_health",
@@ -199,6 +214,7 @@
       "platform/capture/PlatformSignals.kt",
       "platform/capture/TrackingPauseDetector.kt",
       "platform/capture/CaptureHealthMonitor.kt",
+      "platform/capture/CapturePermissionProbe.kt",
       "platform/settings/InstallSourceProbe.kt",
       "platform/scheduling/StopReasonPolicy.kt"
     ],

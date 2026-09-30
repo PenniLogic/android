@@ -6,40 +6,64 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
+/**
+ * The detector is driven by the shape of the platform's answers, not by an API level it never reads:
+ * `wasForceStopped()` is non-null on API 35+ and null below, `lastExitReason()` is non-null on API
+ * 30+ and null below. `AndroidPlatformSignalsTest` proves those guards on the real SDK runtimes.
+ */
 class TrackingPauseDetectorTest {
     private val signals = FakePlatformSignals()
     private val detector = TrackingPauseDetector(signals)
 
     @Test
-    fun `a healthy start on api 36 pauses nothing`() {
+    fun `a healthy start pauses nothing`() {
         signals.forceStopped = false
         assertNull(detector.detect())
     }
 
     @Test
-    fun `api 35 and 36 report a force-stop through ApplicationStartInfo`() {
-        for (api in listOf(35, 36)) {
-            signals.apiLevel = api
-            signals.forceStopped = true
-            assertEquals("api $api", PlatformCapabilityReason.FORCE_STOPPED, detector.detect())
-        }
+    fun `the platform's force-stop answer decides on its own`() {
+        signals.forceStopped = true
+        signals.exitReason = null
+        assertEquals(PlatformCapabilityReason.FORCE_STOPPED, detector.detect())
+        signals.forceStopped = true
+        signals.exitReason = 4 // REASON_CRASH: the start-info answer still wins
+        assertEquals(PlatformCapabilityReason.FORCE_STOPPED, detector.detect())
     }
 
     @Test
-    fun `api 30 to 34 fall back to the last exit reason`() {
-        for (api in listOf(30, 31, 33, 34)) {
-            signals.apiLevel = api
-            signals.forceStopped = null
-            signals.exitReason = AndroidPlatformSignals.REASON_USER_REQUESTED
-            assertEquals("api $api", PlatformCapabilityReason.FORCE_STOPPED, detector.detect())
-            signals.exitReason = 4 // REASON_CRASH: a crash is not a pause
-            assertNull("api $api crash", detector.detect())
-        }
+    fun `a swipe from recents is not a force-stop, whatever the exit reason says`() {
+        // API 35+: wasForceStopped() == false, last exit REASON_USER_REQUESTED (force-stop OR swipe).
+        signals.forceStopped = false
+        signals.exitReason = AndroidPlatformSignals.REASON_USER_REQUESTED
+        assertNull("receivers and jobs are intact after a swipe", detector.detect())
+    }
+
+    @Test
+    fun `without a start-info answer the ambiguous exit reason is inconclusive`() {
+        // API 30-34: no wasForceStopped(); REASON_USER_REQUESTED cannot be told apart from a swipe.
+        signals.forceStopped = null
+        signals.exitReason = AndroidPlatformSignals.REASON_USER_REQUESTED
+        assertNull("documented limitation: not detectable, capture health is re-probed instead", detector.detect())
+        signals.exitReason = 4 // REASON_CRASH: a crash is not a pause either
+        assertNull(detector.detect())
+    }
+
+    @Test
+    fun `a stopped profile is a stop on every level that reports exit reasons`() {
+        signals.forceStopped = null
+        signals.exitReason = AndroidPlatformSignals.REASON_USER_STOPPED
+        assertEquals(PlatformCapabilityReason.FORCE_STOPPED, detector.detect())
+        signals.forceStopped = false
+        assertEquals(
+            "start info does not report profile stops",
+            PlatformCapabilityReason.FORCE_STOPPED,
+            detector.detect(),
+        )
     }
 
     @Test
     fun `below api 30 nothing can be detected and capture is re-probed instead`() {
-        signals.apiLevel = 26
         signals.forceStopped = null
         signals.exitReason = null
         assertNull(detector.detect())

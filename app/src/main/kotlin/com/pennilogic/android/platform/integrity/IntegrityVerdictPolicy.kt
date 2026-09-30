@@ -19,9 +19,13 @@ data class DecodedVerdict(
     val deviceRecognitionVerdict: Set<String>,
     /** `LICENSED`, `UNLICENSED` or `UNEVALUATED`. */
     val appLicensingVerdict: String,
-    /** Opaque identity of the token (for example its SHA-256) used by the replay registry. */
+    /** Opaque identity of the token (for example its SHA-256) used by the replay registry; never blank. */
     val tokenId: String,
-)
+) {
+    init {
+        require(tokenId.isNotBlank()) { "tokenId must identify the token" }
+    }
+}
 
 /** What the server expected for this verification. */
 data class VerdictExpectation(
@@ -41,8 +45,15 @@ data class VerdictExpectation(
     }
 }
 
-/** Remembers token identities within the freshness window so a second presentation is refused. */
+/**
+ * Remembers token identities so a second presentation is refused. [retentionMillis] must cover the
+ * whole freshness window, `maxAge + clockSkew`, or a token could be forgotten while it is still fresh
+ * and replayed; [IntegrityVerdictPolicy.evaluate] refuses a registry that does not.
+ */
 interface ReplayRegistry {
+    /** How long an identity is remembered after it was recorded. */
+    val retentionMillis: Long
+
     /** True when the token was recorded now; false when it was already present. */
     fun recordIfAbsent(
         tokenId: String,
@@ -52,8 +63,12 @@ interface ReplayRegistry {
 
 /** In-memory registry that forgets identities older than the retention window. */
 class InMemoryReplayRegistry(
-    private val retentionMillis: Long,
+    override val retentionMillis: Long,
 ) : ReplayRegistry {
+    init {
+        require(retentionMillis > 0) { "retentionMillis must be positive" }
+    }
+
     private val seen = LinkedHashMap<String, Long>()
 
     @Synchronized
@@ -65,6 +80,12 @@ class InMemoryReplayRegistry(
         if (tokenId in seen) return false
         seen[tokenId] = nowMillis
         return true
+    }
+
+    companion object {
+        /** A registry whose retention covers exactly the freshness window of [expectation]. */
+        fun covering(expectation: VerdictExpectation): InMemoryReplayRegistry =
+            InMemoryReplayRegistry(expectation.maxAgeMillis + expectation.clockSkewMillis)
     }
 }
 
@@ -92,12 +113,20 @@ sealed interface IntegrityDecision {
 
 /**
  * Reference decision table for verifying a standard integrity verdict. **The authoritative
- * implementation belongs to the api repository**: the server decrypts the token, applies exactly
- * these checks in this order and stores the replay registry. It is kept here, executable, so the
- * fail-closed behaviour required by android#57 is tested and so the client interprets a relayed
- * summary the same way. Order: request details first (package, hash, freshness, replay), then the
- * verdicts; an `UNEVALUATED` verdict denies, because Play sets verdicts to `UNEVALUATED` when its own
- * replay protection triggers.
+ * implementation belongs to the server: PenniLogic/api#86** (server-side verdict verification —
+ * nonce issuance, request binding, replay registry and fail-closed policy; blocked by android#57): the
+ * server decrypts the token, applies exactly these checks in this order and stores the replay
+ * registry. It is kept here, executable, so the fail-closed behaviour required by android#57 is
+ * tested and so the client interprets a relayed summary the same way. Order: request details first
+ * (package, hash, freshness, replay), then the verdicts; an `UNEVALUATED` verdict denies, because
+ * Play sets verdicts to `UNEVALUATED` when its own replay protection triggers.
+ *
+ * Invariant the replay row depends on, enforced before any row is evaluated: the registry retains
+ * identities for at least `maxAge + clockSkew`. A registry with shorter retention could forget a token
+ * that is still inside the freshness window, and the same token would pass every row a second time;
+ * such a registry is refused with an [IllegalArgumentException], so a misconfigured server can never
+ * allow anything. The client nonce in the binding is not a replay defence — it only makes two
+ * otherwise identical requests distinct; replay defence is this registry plus Play's own protection.
  */
 object IntegrityVerdictPolicy {
     const val PLAY_RECOGNIZED: String = "PLAY_RECOGNIZED"
@@ -109,6 +138,10 @@ object IntegrityVerdictPolicy {
         expectation: VerdictExpectation,
         replays: ReplayRegistry,
     ): IntegrityDecision {
+        require(replays.retentionMillis >= expectation.maxAgeMillis + expectation.clockSkewMillis) {
+            "replay registry retention (${replays.retentionMillis} ms) must cover the freshness window " +
+                "(${expectation.maxAgeMillis} + ${expectation.clockSkewMillis} ms)"
+        }
         if (verdict.requestPackageName !=
             expectation.packageName
         ) {
