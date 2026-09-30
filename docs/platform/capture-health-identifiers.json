@@ -147,9 +147,9 @@
     {
       "id": "capture_permission_not_granted",
       "condition": "capture_blocked_by_setting",
-      "status": "implemented",
+      "status": "planned_pr2",
       "description": "A runtime permission capture needs (SMS) is not granted.",
-      "detection": "ContextCompat.checkSelfPermission() != PERMISSION_GRANTED for the capture permission.",
+      "detection": "Planned (PR 2): ContextCompat.checkSelfPermission() != PERMISSION_GRANTED for the capture permission, read by a capture-permission probe; this baseline declares and requests no such permission, so no probe exists in it.",
       "clears_when": "The user grants the permission."
     }
   ],
