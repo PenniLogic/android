@@ -179,10 +179,13 @@ data class ClientStateSignal(
             put("taxonomy_version", ClientStateTaxonomy.VERSION)
         }
 
-    private companion object {
-        val SURFACE_ID = Regex("[a-z][a-z0-9_]*")
+    companion object {
+        private val SURFACE_ID = Regex("[a-z][a-z0-9_]*")
 
-        /** `android.permission.RECEIVE_SMS`, `android.app.role.SMS`, ...: the platform's own names only. */
-        val PLATFORM_PERMISSION = Regex("android\\.(permission|app\\.role)\\.[A-Z][A-Z0-9_]*")
+        /**
+         * `android.permission.RECEIVE_SMS`, `android.app.role.SMS`, ...: the platform's own names only.
+         * Published as `taxonomy.permission_attribute_pattern` and reused by the capture probes.
+         */
+        val PLATFORM_PERMISSION: Regex = Regex("android\\.(permission|app\\.role)\\.[A-Z][A-Z0-9_]*")
     }
 }
