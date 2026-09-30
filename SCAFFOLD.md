@@ -59,6 +59,7 @@ Run from the repository root of a clean clone. No other setup step is required.
 | Gates with pipeline metrics | `python scripts/quality_gates.py all` |
 | Gate self-test on planted defects | `python scripts/quality_gates.py self-test` |
 | Script unit tests | `python -m unittest discover -s scripts/tests -p "test_*.py"` |
+| Native formatter input-scope regression only | `./gradlew formatterInputScopeRegression --init-script scripts/tests/fixtures/formatter_input_scope.init.gradle --no-configuration-cache --console=plain --no-daemon --stacktrace` |
 
 On Windows use `gradlew.bat` in place of `./gradlew`. `gradle.properties` sets
 `android.onlyEnableUnitTestForTheTestedBuildType=false` so the release variant also has a unit
@@ -72,6 +73,39 @@ with its reason in `app/build.gradle.kts`: `OldTargetApi` (targetSdk is pinned t
 API 36 baseline and raising it is a reviewed decision guarded by `TargetConformanceTest`) and the
 release-calendar checks `AndroidGradlePluginVersion` and `GradleDependency`, which would otherwise
 fail a pinned build the day a newer Gradle or dependency is published.
+
+The Kotlin formatter targets only `app/src/**/*.kt`. Do not add a repository-root
+`targetExclude("**/build/**")`: Spotless represents that as a separate file collection and
+subtracts it from the source target, so Gradle enumerates changing generated Android resources
+while fingerprinting formatter inputs, even though the final file list is source-only. That caused
+the scaffold self-test recovery to fail before unit tests ran during the
+[PenniLogic/infra#24](https://github.com/PenniLogic/infra/issues/24) conformance run.
+
+The self-test also runs a native Gradle fixture against the retained `spotlessKotlin`
+task input collection, including both operands of any subtraction. It compares the inputs with every
+Kotlin file under `app/src`, checks that no generated or other non-source entries are traversed, and
+repeats the checks after creating, modifying, renaming and deleting synthetic generated resources
+under the resource-blame output directory. Only configurable directory trees are accepted as leaf
+trees: collection-backed or filtered tree wrappers are refused before resolution because their
+visitors can hide backing operands. Real `asFileTree`-wrapped subtraction and filtered-wrapper
+negative controls must be refused at every generated-resource stage, not merely return the correct
+final file set. Exact source identities are compared dynamically, so new sources are covered.
+
+Fixture write parents reject every existing symbolic-link/reparse ancestor, including aliases that
+resolve within the checkout, by comparing real and lexical paths and checking no-follow attributes.
+Only uniquely allocated fixture leaves/directories are removed. Native literal-link controls target
+both in-checkout and outside-checkout directories and preserve sibling sentinels. On compatible
+hosts (including Ubuntu CI) both controls must execute and reject. Windows accounts lacking the
+symbolic-link privilege report `literal_link_controls.status=not_exercised`, not passed link evidence;
+no privilege or Developer Mode setting is changed. Windows junction rejection is validated separately.
+
+This probe is required by the Android self-test and its exit code and duration are recorded as
+`formatter_input_scope`; a failed probe makes the self-test fail even if all five defect cases pass.
+The Python script suite tests its wiring without invoking Gradle, preserving Python-only
+conformance probes' toolchain boundary. The native regression requires the toolchain above and
+is never skipped by the Android self-test.
+Its isolated init-script probe uses `--no-configuration-cache` to inspect the configured task,
+without changing the cache settings or execution checks of any quality gate.
 
 Reports: unit tests `app/build/reports/tests/`, JUnit XML `app/build/test-results/`, lint
 `app/build/reports/lint-results-<variant>.{xml,html,txt,sarif}`, coverage

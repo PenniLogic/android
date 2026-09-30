@@ -1,0 +1,237 @@
+import groovy.json.JsonOutput
+import java.nio.file.FileSystemException
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.attribute.BasicFileAttributes
+import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.ConfigurableFileTree
+import org.gradle.api.file.FileCollection
+import org.gradle.api.file.FileTree
+import org.gradle.api.file.FileVisitDetails
+import org.gradle.api.file.FileVisitor
+import org.gradle.api.internal.file.SubtractingFileCollection
+
+class UnsupportedFormatterInputTree extends GradleException {
+    UnsupportedFormatterInputTree(FileCollection collection) {
+        super("Unsupported formatter input tree: " + collection.getClass().name)
+    }
+}
+
+class UnsafeFormatterFixtureParent extends GradleException {
+    UnsafeFormatterFixtureParent(String reason) {
+        super("Unsafe formatter fixture parent: " + reason)
+    }
+}
+
+gradle.projectsEvaluated {
+    def project = gradle.rootProject
+    def target = project.tasks.named("spotlessKotlin").get().getTarget()
+    def sourceRoot = project.file("app").toPath().resolve("src").toAbsolutePath().normalize()
+    def expected = project.fileTree(sourceRoot.toFile()) { include("**/*.kt") }.files
+    def appBuild = project.project(":app").layout.buildDirectory.get().asFile.toPath()
+    def rootBuild = project.layout.buildDirectory.get().asFile.toPath()
+    def blameRoot = appBuild
+        .resolve("intermediates")
+        .resolve("merged_res_blame_folder")
+        .resolve("debug")
+        .resolve("mergeDebugResources")
+        .resolve("out")
+        .resolve("multi-v2")
+
+    project.tasks.register("formatterInputScopeRegression") {
+        doLast {
+            def stages = []
+            def generated = null
+            def outsideSource = null
+            def probeNames = ["Generated.kt", "Changed.kt", "Renamed.kt"]
+            def negativeTrees = []
+            def literalLinks = [status: "not_exercised", reason: "literal symbolic links are unavailable on this host"]
+            def checkout = project.projectDir.toPath().toAbsolutePath().normalize()
+            def testsRoot = project.file("scripts").toPath().resolve("tests")
+            def validateParent = { parent ->
+                def existing = parent.toAbsolutePath().normalize()
+                if (!existing.startsWith(checkout)) {
+                    throw new UnsafeFormatterFixtureParent("outside the checkout")
+                }
+                while (existing != null) {
+                    if (Files.isSymbolicLink(existing)) {
+                        throw new UnsafeFormatterFixtureParent("symbolic-link ancestor")
+                    }
+                    if (Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+                        def attributes = Files.readAttributes(existing, BasicFileAttributes, LinkOption.NOFOLLOW_LINKS)
+                        if (attributes.isOther() || existing.toRealPath() != existing) {
+                            throw new UnsafeFormatterFixtureParent("link/reparse ancestor")
+                        }
+                        if (!attributes.isDirectory()) {
+                            throw new UnsafeFormatterFixtureParent("non-directory ancestor")
+                        }
+                    }
+                    existing = existing.parent
+                }
+            }
+            [blameRoot, testsRoot].each { validateParent(it) }
+            try {
+                Files.createDirectories(blameRoot)
+                generated = Files.createTempDirectory(blameRoot, "formatter-input-scope-")
+                outsideSource = Files.createTempDirectory(testsRoot, "formatter-input-scope-")
+                Files.writeString(outsideSource.resolve("OutsideSource.kt"), "object OutsideSource\n")
+                Files.writeString(generated.resolve("Generated.kt"), "object Generated\n")
+
+                def snapshot = { String name ->
+                    def generatedVisited = [] as Set
+                    def outsideVisited = [] as Set
+                    def visitScope
+                    visitScope = { FileCollection collection ->
+                        // Subtraction enumerates BOTH operands, even when its final files are source-only.
+                        if (collection instanceof SubtractingFileCollection) {
+                            visitScope(collection.getLeft())
+                            visitScope(collection.getRight())
+                        } else if (collection instanceof ConfigurableFileTree) {
+                            collection.visit(new FileVisitor() {
+                                void visitDir(FileVisitDetails details) {
+                                    def path = details.file.toPath().toAbsolutePath().normalize()
+                                    if (path.startsWith(appBuild) || path.startsWith(rootBuild)) {
+                                        generatedVisited.add(path.toString())
+                                    }
+                                }
+
+                                void visitFile(FileVisitDetails details) {
+                                    def path = details.file.toPath().toAbsolutePath().normalize()
+                                    if (path.startsWith(appBuild) || path.startsWith(rootBuild)) {
+                                        generatedVisited.add(path.toString())
+                                    }
+                                    if (!path.startsWith(sourceRoot) || !details.file.name.endsWith(".kt")) {
+                                        outsideVisited.add(path.toString())
+                                    }
+                                }
+                            })
+                        } else if (collection instanceof FileTree) {
+                            // A tree conversion can hide operands that its visitor never reports.
+                            throw new UnsupportedFormatterInputTree(collection)
+                        } else if (collection instanceof ConfigurableFileCollection) {
+                            collection.getFrom().each { entry ->
+                                if (!(entry instanceof FileCollection)) {
+                                    throw new GradleException("Unknown formatter input entry: " + entry.getClass().name)
+                                }
+                                visitScope(entry)
+                            }
+                        } else {
+                            throw new GradleException("Unknown formatter input collection: " + collection.getClass().name)
+                        }
+                    }
+                    visitScope(target)
+                    def wrapped = target.minus(project.fileTree(appBuild.toFile()) { include("**/*") }).asFileTree
+                    [
+                        "wrapped-subtraction": wrapped,
+                        "filtered-wrapped-subtraction": wrapped.matching { include("**/*.kt") },
+                    ].each { controlName, unsafe ->
+                        try {
+                            visitScope(unsafe)
+                            throw new GradleException("Formatter tree negative control was accepted: " + controlName)
+                        } catch (UnsupportedFormatterInputTree rejected) {
+                            negativeTrees.add([case: controlName, lifecycle: name, rejected: true])
+                        }
+                    }
+                    def inputs = target.files
+                    stages.add([
+                        stage: name,
+                        source_files: inputs.size(),
+                        source_set_matches: inputs == expected && !expected.isEmpty(),
+                        generated_entries_visited: generatedVisited.size(),
+                        non_source_entries_visited: outsideVisited.size(),
+                    ])
+                }
+
+                snapshot("created")
+                Files.writeString(generated.resolve("Generated.kt"), "object ChangedGenerated\n")
+                Files.writeString(generated.resolve("Changed.kt"), "object Changed\n")
+                snapshot("modified")
+                Files.move(generated.resolve("Generated.kt"), generated.resolve("Renamed.kt"))
+                snapshot("renamed")
+                probeNames.each { Files.deleteIfExists(generated.resolve(it)) }
+                snapshot("files_deleted")
+                Files.delete(generated)
+                snapshot("directory_deleted")
+
+                def controls = Files.createTempDirectory(testsRoot, "formatter-link-controls-")
+                def inside = controls.resolve("inside")
+                def outside = null
+                def sentinel = "synthetic formatter ownership sentinel\n"
+                def links = [controls.resolve("inside-link"), controls.resolve("outside-link")]
+                try {
+                    outside = Files.createTempDirectory("formatter-link-outside-")
+                    Files.createDirectory(inside)
+                    Files.writeString(inside.resolve("sentinel.txt"), sentinel)
+                    Files.writeString(outside.resolve("sentinel.txt"), sentinel)
+                    def cases = []
+                    def privilegeUnavailable = false
+                    try {
+                        [inside, outside].eachWithIndex { destination, index ->
+                            Files.createSymbolicLink(links[index], destination)
+                        }
+                    } catch (FileSystemException unavailable) {
+                        if (!System.getProperty("os.name").startsWith("Windows") ||
+                            unavailable.reason?.trim()?.replaceAll(/[.\s]+$/, "") !=
+                                "A required privilege is not held by the client") {
+                            throw unavailable
+                        }
+                        privilegeUnavailable = true
+                        literalLinks.reason = "Windows symbolic-link privilege unavailable; literal cases not exercised"
+                    }
+                    if (links.every { Files.isSymbolicLink(it) }) {
+                        links.eachWithIndex { link, index ->
+                            try {
+                                validateParent(link.resolve("child"))
+                                throw new GradleException("Literal link parent was accepted")
+                            } catch (UnsafeFormatterFixtureParent rejected) {
+                                cases.add([target: index == 0 ? "inside" : "outside", rejected: true])
+                            }
+                        }
+                        literalLinks = [status: "passed", cases: cases]
+                    } else if (!privilegeUnavailable) {
+                        throw new GradleException("Literal symbolic-link creation could not be confirmed")
+                    }
+                    if (Files.readString(inside.resolve("sentinel.txt")) != sentinel ||
+                        Files.readString(outside.resolve("sentinel.txt")) != sentinel) {
+                        throw new GradleException("Literal link control modified an existing sentinel")
+                    }
+                    literalLinks.sentinels_preserved = true
+                } finally {
+                    links.each { Files.deleteIfExists(it) }
+                    Files.deleteIfExists(inside.resolve("sentinel.txt"))
+                    Files.deleteIfExists(inside)
+                    if (outside != null) {
+                        Files.deleteIfExists(outside.resolve("sentinel.txt"))
+                        Files.deleteIfExists(outside)
+                    }
+                    Files.deleteIfExists(controls)
+                }
+                literalLinks.fixtures_removed = !Files.exists(controls) && !Files.exists(outside)
+            } finally {
+                if (generated != null) {
+                    probeNames.each { Files.deleteIfExists(generated.resolve(it)) }
+                    Files.deleteIfExists(generated)
+                }
+                if (outsideSource != null) {
+                    Files.deleteIfExists(outsideSource.resolve("OutsideSource.kt"))
+                    Files.deleteIfExists(outsideSource)
+                }
+            }
+            def passed = stages.size() == 5 && stages.every {
+                it.source_set_matches && it.generated_entries_visited == 0 && it.non_source_entries_visited == 0
+            }
+            println("FORMATTER_INPUT_SCOPE " + JsonOutput.toJson([
+                passed: passed,
+                expected_source_files: expected.size(),
+                stages: stages,
+                wrapped_tree_negative_controls: negativeTrees,
+                literal_link_controls: literalLinks,
+                generated_fixture_removed: generated != null && !Files.exists(generated),
+                outside_source_fixture_removed: outsideSource != null && !Files.exists(outsideSource),
+            ]))
+            if (!passed) {
+                throw new GradleException("Formatter input collection traversed generated/non-source paths or lost Kotlin sources")
+            }
+        }
+    }
+}
