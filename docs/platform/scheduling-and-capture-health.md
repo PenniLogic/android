@@ -97,7 +97,10 @@ requires.
 
 The public SDK cannot name the private space: `UserManager.isProfile() && !isManagedProfile()` is
 true for the private space and for a clone profile alike, and both are classified as
-`private_space_paused`. This residual is recorded here and in the identifiers document.
+`private_space_paused`. This residual is recorded here and in the identifiers document. The
+classification records a concealment choice of the user (running the app inside a private space):
+it stays on the device, is counted in aggregate only, is never joined to an account identifier and
+is not exported by this baseline.
 
 `CaptureHealthMonitor` is the state machine behind "after force-stop recovery the app shows tracking
 paused until capture health is restored": `onProcessStart` records a detected pause and **never
@@ -116,6 +119,10 @@ The drain worker logs it with the stop reason and bucket and `capture_health: nu
 it with the state. It carries no device identifier, transaction content, amount, message content or
 account identifier (`CaptureHealthTest` asserts the exact key set). The taxonomy signal
 `client_state.<identifier>` is recorded separately by the surface with only the published attributes.
+Sink and retention: the event goes to the local `Log.i` sink only — no telemetry export exists in
+this baseline, and any future export names its purpose, aggregation and retention in
+`capture-health-identifiers.json` first; the app persists nothing for this event, so its retention
+is the device's logcat ring buffer.
 
 ## 6. Evidence
 
