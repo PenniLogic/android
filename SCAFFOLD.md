@@ -85,7 +85,20 @@ The self-test also runs a native Gradle fixture against the retained `spotlessKo
 task input collection, including both operands of any subtraction. It compares the inputs with every
 Kotlin file under `app/src`, checks that no generated or other non-source entries are traversed, and
 repeats the checks after creating, modifying, renaming and deleting synthetic generated resources
-under the resource-blame output directory. The fixture removes only its own temporary paths.
+under the resource-blame output directory. Only configurable directory trees are accepted as leaf
+trees: collection-backed or filtered tree wrappers are refused before resolution because their
+visitors can hide backing operands. Real `asFileTree`-wrapped subtraction and filtered-wrapper
+negative controls must be refused at every generated-resource stage, not merely return the correct
+final file set. Exact source identities are compared dynamically, so new sources are covered.
+
+Fixture write parents reject every existing symbolic-link/reparse ancestor, including aliases that
+resolve within the checkout, by comparing real and lexical paths and checking no-follow attributes.
+Only uniquely allocated fixture leaves/directories are removed. Native literal-link controls target
+both in-checkout and outside-checkout directories and preserve sibling sentinels. On compatible
+hosts (including Ubuntu CI) both controls must execute and reject. Windows accounts lacking the
+symbolic-link privilege report `literal_link_controls.status=not_exercised`, not passed link evidence;
+no privilege or Developer Mode setting is changed. Windows junction rejection is validated separately.
+
 This probe is required by the Android self-test and its exit code and duration are recorded as
 `formatter_input_scope`; a failed probe makes the self-test fail even if all five defect cases pass.
 The Python script suite tests its wiring without invoking Gradle, preserving Python-only

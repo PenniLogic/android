@@ -1,11 +1,27 @@
 import groovy.json.JsonOutput
+import java.nio.file.FileSystemException
 import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.attribute.BasicFileAttributes
 import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.ConfigurableFileTree
 import org.gradle.api.file.FileCollection
 import org.gradle.api.file.FileTree
 import org.gradle.api.file.FileVisitDetails
 import org.gradle.api.file.FileVisitor
 import org.gradle.api.internal.file.SubtractingFileCollection
+
+class UnsupportedFormatterInputTree extends GradleException {
+    UnsupportedFormatterInputTree(FileCollection collection) {
+        super("Unsupported formatter input tree: " + collection.getClass().name)
+    }
+}
+
+class UnsafeFormatterFixtureParent extends GradleException {
+    UnsafeFormatterFixtureParent(String reason) {
+        super("Unsafe formatter fixture parent: " + reason)
+    }
+}
 
 gradle.projectsEvaluated {
     def project = gradle.rootProject
@@ -28,20 +44,32 @@ gradle.projectsEvaluated {
             def generated = null
             def outsideSource = null
             def probeNames = ["Generated.kt", "Changed.kt", "Renamed.kt"]
+            def negativeTrees = []
+            def literalLinks = [status: "not_exercised", reason: "literal symbolic links are unavailable on this host"]
             def checkout = project.projectDir.toPath().toAbsolutePath().normalize()
             def testsRoot = project.file("scripts").toPath().resolve("tests")
-            [blameRoot, testsRoot].each { parent ->
+            def validateParent = { parent ->
                 def existing = parent.toAbsolutePath().normalize()
                 if (!existing.startsWith(checkout)) {
-                    throw new GradleException("Formatter fixture parent is outside the checkout")
+                    throw new UnsafeFormatterFixtureParent("outside the checkout")
                 }
-                while (!Files.exists(existing)) {
+                while (existing != null) {
+                    if (Files.isSymbolicLink(existing)) {
+                        throw new UnsafeFormatterFixtureParent("symbolic-link ancestor")
+                    }
+                    if (Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+                        def attributes = Files.readAttributes(existing, BasicFileAttributes, LinkOption.NOFOLLOW_LINKS)
+                        if (attributes.isOther() || existing.toRealPath() != existing) {
+                            throw new UnsafeFormatterFixtureParent("link/reparse ancestor")
+                        }
+                        if (!attributes.isDirectory()) {
+                            throw new UnsafeFormatterFixtureParent("non-directory ancestor")
+                        }
+                    }
                     existing = existing.parent
                 }
-                if (!existing.toRealPath().startsWith(checkout.toRealPath())) {
-                    throw new GradleException("Formatter fixture parent resolves outside the checkout")
-                }
             }
+            [blameRoot, testsRoot].each { validateParent(it) }
             try {
                 Files.createDirectories(blameRoot)
                 generated = Files.createTempDirectory(blameRoot, "formatter-input-scope-")
@@ -58,7 +86,7 @@ gradle.projectsEvaluated {
                         if (collection instanceof SubtractingFileCollection) {
                             visitScope(collection.getLeft())
                             visitScope(collection.getRight())
-                        } else if (collection instanceof FileTree) {
+                        } else if (collection instanceof ConfigurableFileTree) {
                             collection.visit(new FileVisitor() {
                                 void visitDir(FileVisitDetails details) {
                                     def path = details.file.toPath().toAbsolutePath().normalize()
@@ -77,6 +105,9 @@ gradle.projectsEvaluated {
                                     }
                                 }
                             })
+                        } else if (collection instanceof FileTree) {
+                            // A tree conversion can hide operands that its visitor never reports.
+                            throw new UnsupportedFormatterInputTree(collection)
                         } else if (collection instanceof ConfigurableFileCollection) {
                             collection.getFrom().each { entry ->
                                 if (!(entry instanceof FileCollection)) {
@@ -89,6 +120,18 @@ gradle.projectsEvaluated {
                         }
                     }
                     visitScope(target)
+                    def wrapped = target.minus(project.fileTree(appBuild.toFile()) { include("**/*") }).asFileTree
+                    [
+                        "wrapped-subtraction": wrapped,
+                        "filtered-wrapped-subtraction": wrapped.matching { include("**/*.kt") },
+                    ].each { controlName, unsafe ->
+                        try {
+                            visitScope(unsafe)
+                            throw new GradleException("Formatter tree negative control was accepted: " + controlName)
+                        } catch (UnsupportedFormatterInputTree rejected) {
+                            negativeTrees.add([case: controlName, lifecycle: name, rejected: true])
+                        }
+                    }
                     def inputs = target.files
                     stages.add([
                         stage: name,
@@ -109,6 +152,61 @@ gradle.projectsEvaluated {
                 snapshot("files_deleted")
                 Files.delete(generated)
                 snapshot("directory_deleted")
+
+                def controls = Files.createTempDirectory(testsRoot, "formatter-link-controls-")
+                def inside = controls.resolve("inside")
+                def outside = null
+                def sentinel = "synthetic formatter ownership sentinel\n"
+                def links = [controls.resolve("inside-link"), controls.resolve("outside-link")]
+                try {
+                    outside = Files.createTempDirectory("formatter-link-outside-")
+                    Files.createDirectory(inside)
+                    Files.writeString(inside.resolve("sentinel.txt"), sentinel)
+                    Files.writeString(outside.resolve("sentinel.txt"), sentinel)
+                    def cases = []
+                    def privilegeUnavailable = false
+                    try {
+                        [inside, outside].eachWithIndex { destination, index ->
+                            Files.createSymbolicLink(links[index], destination)
+                        }
+                    } catch (FileSystemException unavailable) {
+                        if (!System.getProperty("os.name").startsWith("Windows") ||
+                            unavailable.reason?.trim()?.replaceAll(/[.\s]+$/, "") !=
+                                "A required privilege is not held by the client") {
+                            throw unavailable
+                        }
+                        privilegeUnavailable = true
+                        literalLinks.reason = "Windows symbolic-link privilege unavailable; literal cases not exercised"
+                    }
+                    if (links.every { Files.isSymbolicLink(it) }) {
+                        links.eachWithIndex { link, index ->
+                            try {
+                                validateParent(link.resolve("child"))
+                                throw new GradleException("Literal link parent was accepted")
+                            } catch (UnsafeFormatterFixtureParent rejected) {
+                                cases.add([target: index == 0 ? "inside" : "outside", rejected: true])
+                            }
+                        }
+                        literalLinks = [status: "passed", cases: cases]
+                    } else if (!privilegeUnavailable) {
+                        throw new GradleException("Literal symbolic-link creation could not be confirmed")
+                    }
+                    if (Files.readString(inside.resolve("sentinel.txt")) != sentinel ||
+                        Files.readString(outside.resolve("sentinel.txt")) != sentinel) {
+                        throw new GradleException("Literal link control modified an existing sentinel")
+                    }
+                    literalLinks.sentinels_preserved = true
+                } finally {
+                    links.each { Files.deleteIfExists(it) }
+                    Files.deleteIfExists(inside.resolve("sentinel.txt"))
+                    Files.deleteIfExists(inside)
+                    if (outside != null) {
+                        Files.deleteIfExists(outside.resolve("sentinel.txt"))
+                        Files.deleteIfExists(outside)
+                    }
+                    Files.deleteIfExists(controls)
+                }
+                literalLinks.fixtures_removed = !Files.exists(controls) && !Files.exists(outside)
             } finally {
                 if (generated != null) {
                     probeNames.each { Files.deleteIfExists(generated.resolve(it)) }
@@ -126,6 +224,8 @@ gradle.projectsEvaluated {
                 passed: passed,
                 expected_source_files: expected.size(),
                 stages: stages,
+                wrapped_tree_negative_controls: negativeTrees,
+                literal_link_controls: literalLinks,
                 generated_fixture_removed: generated != null && !Files.exists(generated),
                 outside_source_fixture_removed: outsideSource != null && !Files.exists(outsideSource),
             ]))
