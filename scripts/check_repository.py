@@ -9,6 +9,8 @@ import sys
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# Rendered from the generator profile, never inferred from editable repository metadata.
+WORKFLOW_REPOSITORY = "android"
 REQUIRED = (
     "README.md", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md",
     "CONSTITUTION.md", "COPILOT_FILES.md",
@@ -21,8 +23,9 @@ SECRET_PATTERNS = (
     re.compile(rb"\bgithub_pat_[A-Za-z0-9_]{30,}\b"),
     re.compile(rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
 )
-# Generated workflows contain exactly these reviewed expressions. Every other
-# `${{` is refused wherever it appears, so whole-context forms such as
+# Generated workflows contain these reviewed expressions; the separate infra
+# Conformance exception binds one exact token leaf, never this global allowlist.
+# Every other `${{` is refused wherever it appears, so whole-context forms such as
 # toJSON(github) or github[format('to{0}', 'ken')] cannot reach the token without
 # naming it, and the key `if` is refused at any nesting level because a condition
 # evaluates expressions without `${{`.
@@ -31,6 +34,7 @@ WORKFLOW_EXPRESSIONS = {
     "${{ github.event.pull_request.number || github.ref }}",
     "${{ github.event.pull_request.base.sha || github.sha }}",
 }
+CONFORMANCE_TOKEN_ENV = {"GH_TOKEN": "${{ github.token }}"}
 # Tripwire behind the allowlist: any form of the secrets context or the workflow
 # token stays refused even if the allowlist above is ever widened by mistake. It
 # runs over the decoded strings because GitHub's expression lexer skips any
@@ -50,6 +54,7 @@ WORKFLOW_ACTIONS = {
     "actions/setup-python": {"python-version"},
     "actions/setup-node": {"node-version-file"},
     "actions/setup-java": {"distribution", "java-version"},
+    "actions/upload-artifact": {"name", "path", "retention-days", "if-no-files-found"},
 }
 ACTION_COMMIT = re.compile(r"[0-9a-f]{40}")
 # The commit each listed action is pinned to. generate.py renders this mapping
@@ -65,6 +70,7 @@ WORKFLOW_ACTION_PINS = {
     "actions/setup-java": "de7274f081f381c8f8158605e0321c36c376e2e6",
     "actions/setup-node": "820762786026740c76f36085b0efc47a31fe5020",
     "actions/setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
 }
 # Generated workflows use exactly these keys at the top level, in a job and in a
 # step; every other key at these placements is refused, so nothing is accepted by
@@ -139,17 +145,46 @@ def json_document(content):
     return json.loads(text, object_pairs_hook=unique)
 
 
-def workflow_strings(value):
-    """Yield every key and string of a parsed workflow document at any nesting level."""
+def workflow_string_locations(value, path=()):
+    """Yield paths with every key and string; a key never has its value's leaf path."""
     if isinstance(value, dict):
         for key, item in value.items():
-            yield key
-            yield from workflow_strings(item)
+            yield path + (key, None), key
+            yield from workflow_string_locations(item, path + (key,))
     elif isinstance(value, list):
-        for item in value:
-            yield from workflow_strings(item)
+        for index, item in enumerate(value):
+            yield from workflow_string_locations(item, path + (index,))
     elif isinstance(value, str):
-        yield value
+        yield path, value
+
+
+def workflow_strings(value, token_path=None):
+    """Yield every key and string except a caller-validated, single token value leaf."""
+    for path, text in workflow_string_locations(value):
+        if path != token_path:
+            yield text
+
+
+def conformance_token_path(value):
+    """Return the token leaf only for one plain harness step with its exact, token-only environment."""
+    jobs = value.get("jobs")
+    if not isinstance(jobs, dict) or set(jobs) != {"conformance"}:
+        return None
+    job = jobs["conformance"]
+    if not isinstance(job, dict) or "env" in job:
+        return None
+    steps = job.get("steps")
+    if not isinstance(steps, list) or not all(isinstance(step, dict) for step in steps):
+        return None
+    candidates = [(index, step) for index, step in enumerate(steps) if step.get("name") == "Run conformance"]
+    if len(candidates) != 1:
+        return None
+    index, step = candidates[0]
+    if (set(step) != {"name", "run", "env"} or not isinstance(step["run"], str)
+            or step["env"] != CONFORMANCE_TOKEN_ENV
+            or any("env" in other for position, other in enumerate(steps) if position != index)):
+        return None
+    return ("jobs", "conformance", "steps", index, "env", "GH_TOKEN")
 
 
 def workflow_mappings(value):
@@ -163,8 +198,8 @@ def workflow_mappings(value):
             yield from workflow_mappings(item)
 
 
-def validate_expressions(value):
-    for text in workflow_strings(value):
+def validate_expressions(value, token_path=None):
+    for text in workflow_strings(value, token_path):
         start = text.find("${{")
         while start != -1:
             end = text.find("}}", start)
@@ -173,7 +208,7 @@ def validate_expressions(value):
             start = text.find("${{", end + 2)
 
 
-def validate_mappings(value):
+def validate_mappings(value, conformance=False):
     for mapping in workflow_mappings(value):
         if "if" in mapping:
             # jobs.<id>.if, steps[].if, jobs.<id>.snapshot.if or any future condition field.
@@ -191,6 +226,8 @@ def validate_mappings(value):
                 raise Refused("unreviewed action input; only the generated inputs are accepted")
             if action == "actions/checkout" and inputs.get("persist-credentials") is not False:
                 raise Refused("checkout must not retain credentials")
+            if action == "actions/upload-artifact" and not conformance:
+                raise Refused("artifact upload is reserved for infra conformance")
 
 
 def validate_shape(value):
@@ -220,13 +257,18 @@ def validate_workflow(name, data):
         raise Refused("workflow document must be one JSON object")
     if value.get("permissions") != {"contents": "read"}:
         raise Refused("expected read-only workflow token")
-    validate_expressions(value)
-    if any(WORKFLOW_SECRET_ACCESS.search(text) for text in workflow_strings(value)):
+    conformance = WORKFLOW_REPOSITORY == "infra" and name == ".github/workflows/conformance.yml"
+    token_path = conformance_token_path(value) if conformance else None
+    validate_expressions(value, token_path)
+    if any(WORKFLOW_SECRET_ACCESS.search(text) for text in workflow_strings(value, token_path)):
         raise Refused("public candidate jobs must not receive secrets")
-    validate_mappings(value)
+    validate_mappings(value, conformance=conformance)
     validate_shape(value)
     events = value.get("on", {})
-    if not isinstance(events, dict) or set(events) - {"push", "pull_request", "workflow_dispatch"}:
+    allowed_events = {"push", "pull_request", "workflow_dispatch"}
+    if conformance:
+        allowed_events.add("schedule")
+    if not isinstance(events, dict) or set(events) - allowed_events:
         raise Refused("unreviewed workflow trigger")
     jobs = value["jobs"]
     for job in jobs.values():
@@ -236,9 +278,8 @@ def validate_workflow(name, data):
         # writable job credentials stay refused even if JOB_KEYS is ever widened by mistake.
         if job.get("permissions", {"contents": "read"}) != {"contents": "read"}:
             raise Refused("writable job credentials are not permitted")
-    # The generator emits exactly two workflow files, each with exactly one job and its own
-    # trigger set. A third file, an added plain job, a dropped manual dispatch or a setup
-    # workflow that gained push/pull_request is drift the key allowlists above cannot see.
+    # Only infra gains the requested third workflow. Every file has its own exact job and
+    # trigger sets; a consumer cannot gain that exception by editing its agent-policy.json.
     if name == ".github/workflows/ci.yml":
         if set(events) != {"push", "pull_request", "workflow_dispatch"}:
             raise Refused("CI must run on exactly main pushes, pull requests and manual dispatch")
@@ -251,8 +292,22 @@ def validate_workflow(name, data):
             raise Refused("Copilot setup must run on manual dispatch only")
         if set(jobs) != {"copilot-setup-steps"}:
             raise Refused("Copilot setup must contain its documented single job")
+    elif conformance:
+        if set(events) != {"workflow_dispatch", "schedule"}:
+            raise Refused("Conformance must run on exactly weekly schedule and manual dispatch")
+        if events["workflow_dispatch"] != {} or events["schedule"] != [{"cron": "17 5 * * 1"}]:
+            raise Refused("Conformance must keep its weekly cron and input-free manual dispatch")
+        if set(jobs) != {"conformance"}:
+            raise Refused("Conformance must contain its documented single job")
+        job = jobs["conformance"]
+        if value.get("name") != "Conformance" or job.get("name") != "Conformance":
+            raise Refused("Keep the Conformance workflow and job names stable")
+        if type(job.get("timeout-minutes")) is not int or job["timeout-minutes"] != 60:
+            raise Refused("Conformance must keep its bounded 60-minute timeout")
+        if token_path is None:
+            raise Refused("Conformance must keep one authenticated harness step and no other environment")
     else:
-        raise Refused("workflow file outside the generated pair ci.yml and copilot-setup-steps.yml")
+        raise Refused("workflow file outside the generated pair or infra-only conformance.yml")
 
 
 def check(files):
