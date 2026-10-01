@@ -5,9 +5,12 @@ from __future__ import annotations
 import argparse
 import ast
 import contextlib
+import ctypes
+from ctypes import wintypes
 import io
 import json
 import os
+import msvcrt
 from pathlib import Path
 import runpy
 import subprocess
@@ -445,6 +448,341 @@ def finalizer_scenario(root: Path, mode: str, actual_cli: bool = False) -> None:
     real_print("WINDOWS_LIFECYCLE_RESULT=" + json.dumps(result), flush=True)
 
 
+class _ResourceObserver:
+    """Independent bindings observe only the synthetic objects this worker creates."""
+
+    def __init__(self) -> None:
+        self.kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        for name, result, arguments in (
+            ("GetCurrentProcess", wintypes.HANDLE, ()),
+            ("GetProcessTimes", wintypes.BOOL,
+             (wintypes.HANDLE,) + (ctypes.POINTER(wintypes.FILETIME),) * 4),
+            ("DuplicateHandle", wintypes.BOOL,
+             (wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.HANDLE),
+              wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)),
+            ("WaitForSingleObject", wintypes.DWORD, (wintypes.HANDLE, wintypes.DWORD)),
+            ("IsProcessInJob", wintypes.BOOL,
+             (wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL))),
+            ("GetHandleInformation", wintypes.BOOL,
+             (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))),
+            ("GetFileType", wintypes.DWORD, (wintypes.HANDLE,)),
+            ("CloseHandle", wintypes.BOOL, (wintypes.HANDLE,)),
+            ("TerminateJobObject", wintypes.BOOL, (wintypes.HANDLE, wintypes.UINT)),
+        ):
+            operation = getattr(self.kernel, name)
+            operation.restype, operation.argtypes = result, arguments
+
+    @staticmethod
+    def require(success, stage: str) -> None:
+        if not success:
+            raise ctypes.WinError(ctypes.get_last_error(), stage)
+
+    def created(self, handle: int) -> int:
+        values = [wintypes.FILETIME() for _ in range(4)]
+        self.require(
+            self.kernel.GetProcessTimes(handle, *(ctypes.byref(value) for value in values)),
+            "independent observer creation query",
+        )
+        return (values[0].dwHighDateTime << 32) | values[0].dwLowDateTime
+
+    def duplicate(self, handle: int) -> int:
+        result = wintypes.HANDLE()
+        current = self.kernel.GetCurrentProcess()
+        self.require(
+            self.kernel.DuplicateHandle(current, handle, current, ctypes.byref(result), 0, False, 2),
+            "independent owned object pin",
+        )
+        return result.value
+
+    def wait(self, handle: int, seconds: float = 0) -> bool:
+        outcome = self.kernel.WaitForSingleObject(handle, max(0, int(seconds * 1000)))
+        if outcome not in (windows.WAIT_OBJECT_0, windows.WAIT_TIMEOUT):
+            raise ctypes.WinError(ctypes.get_last_error(), "independent native wait")
+        return outcome == windows.WAIT_OBJECT_0
+
+    def valid(self, handle: int) -> bool:
+        flags = wintypes.DWORD()
+        return bool(self.kernel.GetHandleInformation(handle, ctypes.byref(flags)))
+
+    def close(self, handle: int) -> None:
+        self.require(self.kernel.CloseHandle(handle), "independent owned handle close")
+
+
+def resource_scenario(root: Path, mode: str, actual_cli: bool = False) -> None:
+    observer = _ResourceObserver()
+    api = windows.native()
+    worker = Path(__file__).resolve()
+    (root / "gradlew.bat").write_text(
+        '@echo off\r\nif "%~1"=="formatterInputScopeRegression" exit /b 0\r\n'
+        + f'"{sys.executable}" -I -S -B -u "{worker}" --leaf "{root}"\r\nexit /b 0\r\n',
+        encoding="ascii", newline="",
+    )
+    original_popen = subprocess.Popen
+    original_reader_init = windows._Reader.__init__
+    original_job_init = windows.WindowsJob.__init__
+    original_unsafe_init = windows.UnsafeProcessTreeError.__init__
+    original_reader_start = windows._Reader.start
+    original_release_close = windows.ReleaseEvent.close
+    original_duplicate, original_created = api.duplicate, api.created
+    original_open = api.kernel.OpenProcess
+    original_inside = api.kernel.IsProcessInJob
+    original_close = api.kernel.CloseHandle
+    processes, observers, readers, jobs, ledger, constructed = [], [], [], [], [], []
+    phase = {"active": False, "reader_count": 0, "admission": False}
+    child, caught = None, None
+    result = {"mode": mode, "actual_cli": actual_cli}
+    real_print = print
+    stderr = io.StringIO()
+    planted, later_format, later_lint = [root / name for name in ("planted.kt", "later-format.kt", "later-lint.xml")]
+    if actual_cli:
+        script = root / "scripts" / "quality_gates.py"
+        script.parent.mkdir()
+        script.write_bytes(Path(quality_gates.__file__).read_bytes())
+        planted = root / r"app\src\test\kotlin\com\pennilogic\android\PlantedFailingTest.kt"
+        later_format = root / r"app\src\main\kotlin\com\pennilogic\android\PlantedFormatViolation.kt"
+        later_lint = root / r"app\src\main\res\values\planted_lint_violation.xml"
+    started = time.monotonic()
+    reader_modes = ("reader_first_interrupt", "reader_second_interrupt", "reader_second_close_interrupt")
+
+    def record_process(*args, **kwargs):
+        phase["active"] = "formatterInputScopeRegression" not in args[0][-1]
+        process = original_popen(*args, **kwargs)
+        pin = observer.duplicate(int(process._handle))
+        processes.append(process)
+        observers.append({"pid": process.pid, "created": observer.created(pin), "handle": pin})
+        return process
+
+    def record_reader(reader, *args, **kwargs):
+        original_reader_init(reader, *args, **kwargs)
+        readers.append(reader)
+        if phase["active"]:
+            phase["reader_count"] += 1
+            target = 1 if mode == "reader_first_interrupt" else 2
+            if mode in reader_modes and phase["reader_count"] == target:
+                if mode == "reader_second_close_interrupt":
+                    patches.enter_context(mock.patch.object(reader.stream, "close", side_effect=KeyboardInterrupt(
+                        "SYNTHETIC_PRIVATE_DIAGNOSTIC_CANARY",
+                    )))
+                raise KeyboardInterrupt("synthetic partial reader construction")
+
+    def record_job(job):
+        original_job_init(job)
+        jobs.append(job)
+
+    def start_reader(reader):
+        original_reader_start(reader)
+        if phase["active"] and mode == "reader_start_interrupt":
+            raise KeyboardInterrupt("synthetic interrupt after native reader thread startup")
+
+    def record_unsafe(error, *args, **kwargs):
+        original_unsafe_init(error, *args, **kwargs)
+        constructed.append(error)
+
+    def wait_for_child() -> dict:
+        nonlocal child
+        if child is not None:
+            return child
+        deadline = time.monotonic() + STARTUP_SECONDS
+        ready = root / "leaf-ready.json"
+        while True:
+            queued = []
+            for reader in readers:
+                if reader.lines is not None:
+                    with reader.lines.mutex:
+                        queued.extend(reader.lines.queue)
+            if ready.exists() and (
+                phase.get("console_handshake") or any(line.startswith("> Task") for line in queued)
+            ):
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Synthetic acquired-observer child startup absent")
+            time.sleep(0.005)
+        identity = json.loads(ready.read_text(encoding="ascii"))
+        if child is None:
+            child = identity
+        return identity
+
+    def release_close(event):
+        if phase["active"] and mode in ("member_admission_close", "member_query_close"):
+            wait_for_child()
+            phase["admission"] = True
+        return original_release_close(event)
+
+    def record_duplicate(handle):
+        acquired = original_duplicate(handle)
+        if phase["active"]:
+            ledger.append({
+                "kind": "duplicate", "pid": processes[-1].pid,
+                "created": observer.created(acquired), "handle": acquired,
+                "close_confirmed": False,
+            })
+        return acquired
+
+    def record_open(access, inherit, pid):
+        acquired = original_open(access, inherit, pid)
+        if acquired and phase["active"]:
+            ledger.append({
+                "kind": "open", "pid": int(pid), "created": observer.created(acquired),
+                "handle": int(acquired), "access": int(access), "close_confirmed": False,
+            })
+        return acquired
+
+    def birth(handle):
+        if phase["active"]:
+            target = next((entry for entry in reversed(ledger) if entry["handle"] == int(handle)
+                           and not entry["close_confirmed"]), None)
+            if target is not None and (
+                mode == "pin_birth_close" and target["kind"] == "duplicate"
+                or mode == "member_query_close" and child is not None and target["pid"] == child["pid"]
+            ):
+                raise ctypes.WinError(6, "SYNTHETIC_PRIVATE_DIAGNOSTIC_CANARY")
+        return original_created(handle)
+
+    def inside(handle, job, pointer):
+        target = next((entry for entry in reversed(ledger) if entry["handle"] == int(handle)
+                       and not entry["close_confirmed"]), None)
+        if phase["admission"] and mode == "member_admission_close" and target and target["pid"] == child["pid"]:
+            confirmed = wintypes.BOOL()
+            observer.require(observer.kernel.IsProcessInJob(handle, job, ctypes.byref(confirmed)),
+                             "independent child admission observation")
+            if not confirmed.value:
+                raise RuntimeError("Refused fault injection on a process outside the source-created Job")
+            target["inside_source_created_job"] = True
+            ctypes.set_last_error(6)
+            return 0
+        return original_inside(handle, job, pointer)
+
+    def close(handle):
+        entries = [entry for entry in ledger if entry["handle"] == int(handle) and not entry["close_confirmed"]]
+        if any(
+            mode == "pin_birth_close" and entry["kind"] == "duplicate"
+            or mode in ("member_admission_close", "member_query_close") and child is not None
+            and entry["pid"] == child["pid"] for entry in entries
+        ):
+            ctypes.set_last_error(6)
+            return 0
+        closed = original_close(handle)
+        if closed:
+            for entry in entries:
+                entry["close_confirmed"] = True
+        return closed
+
+    def console(*args, **kwargs):
+        if args and str(args[0]).startswith("> Task"):
+            phase["console_handshake"] = True
+            wait_for_child()
+            raise KeyboardInterrupt
+        if kwargs.get("file") is sys.stderr:
+            return real_print(*args, **kwargs)
+
+    try:
+        with contextlib.ExitStack() as patches:
+            for name, value in (("ROOT", root), ("APP", root), ("FAILING_TEST", planted),
+                                ("FORMAT_VIOLATION", later_format), ("LINT_VIOLATION", later_lint)):
+                patches.enter_context(mock.patch.object(quality_gates, name, value))
+            patches.enter_context(mock.patch.object(
+                quality_gates, "run_formatter_input_scope", return_value=quality_gates.GradleRun(0, 0, ""),
+            ))
+            patches.enter_context(mock.patch.object(windows.subprocess, "Popen", side_effect=record_process))
+            patches.enter_context(mock.patch.object(windows._Reader, "__init__", new=record_reader))
+            patches.enter_context(mock.patch.object(windows._Reader, "start", new=start_reader))
+            patches.enter_context(mock.patch.object(windows.WindowsJob, "__init__", new=record_job))
+            patches.enter_context(mock.patch.object(windows.UnsafeProcessTreeError, "__init__", new=record_unsafe))
+            patches.enter_context(mock.patch.object(windows.ReleaseEvent, "close", new=release_close))
+            patches.enter_context(mock.patch.object(api, "duplicate", side_effect=record_duplicate))
+            patches.enter_context(mock.patch.object(api, "created", side_effect=birth))
+            patches.enter_context(mock.patch.object(api.kernel, "OpenProcess", side_effect=record_open))
+            patches.enter_context(mock.patch.object(api.kernel, "IsProcessInJob", side_effect=inside))
+            patches.enter_context(mock.patch.object(api.kernel, "CloseHandle", side_effect=close))
+            patches.enter_context(mock.patch("builtins.print", side_effect=console))
+            try:
+                if actual_cli:
+                    with mock.patch.object(sys, "argv", [str(script), "self-test"]), contextlib.redirect_stderr(stderr):
+                        try:
+                            runpy.run_path(str(script), run_name="__main__")
+                        except SystemExit as error:
+                            result["cli_exit_code"] = error.code
+                            caught = error.__context__
+                        except BaseException as error:
+                            caught = error
+                            traceback.print_exception(error, file=stderr)
+                else:
+                    quality_gates.self_test()
+            except BaseException as error:
+                caught = error
+            result.update({
+                "exception_type": type(caught).__name__,
+                "unsafe_constructions": len(constructed),
+                "same_canonical_unsafe": bool(constructed) and caught is constructed[0],
+                "plant_retained": planted.exists(),
+                "later_plants_absent": not later_format.exists() and not later_lint.exists(),
+                "root_identities": [{key: value for key, value in pin.items() if key != "handle"} for pin in observers],
+                "native_root_exits": [observer.wait(pin["handle"]) for pin in observers],
+                "source_pipes_closed": [
+                    {"stdout": process.stdout.closed, "stderr": process.stderr.closed} for process in processes
+                ],
+                "open_native_pipe_types": [
+                    {name: observer.kernel.GetFileType(msvcrt.get_osfhandle(stream.fileno()))
+                     for name, stream in (("stdout", process.stdout), ("stderr", process.stderr)) if not stream.closed}
+                    for process in processes
+                ],
+                "consumer_started": (root / "leaf-ready.json").exists(),
+                "source_seconds": time.monotonic() - started,
+                "child_identity": child,
+            })
+            retained = set()
+            if isinstance(caught, windows.UnsafeProcessTreeError):
+                result["diagnostic"] = caught.diagnostic()
+                for resource in caught.pending_resources:
+                    if isinstance(resource, windows.ProcessExits):
+                        retained.update(pin.handle for pin in resource.pins.values() if pin.handle is not None)
+                    elif getattr(resource, "handle", None) is not None:
+                        retained.add(resource.handle)
+            for entry in ledger:
+                if not entry["close_confirmed"]:
+                    entry["valid_at_error"] = observer.valid(entry["handle"])
+                    entry["retained_at_error"] = entry["handle"] in retained
+            result["acquired_observer_ledger"] = ledger
+            result["every_acquired_handle_closed_or_retained"] = all(
+                entry["close_confirmed"] or entry.get("valid_at_error") and entry.get("retained_at_error")
+                for entry in ledger
+            )
+            result["operator_stderr"] = stderr.getvalue()
+    finally:
+        deadline = time.monotonic() + windows.TEARDOWN_SECONDS
+        for job in jobs:
+            if job.handle is not None:
+                observer.require(observer.kernel.TerminateJobObject(job.handle, 98), "owned resource guardian termination")
+        for reader in readers:
+            reader.stop_delivery.set()
+        for pin in observers:
+            if not observer.wait(pin["handle"], max(0, deadline - time.monotonic())):
+                raise RuntimeError("Independent acquired-resource root exit unconfirmed")
+        for reader in readers:
+            if reader.thread.ident is None:
+                reader.close_unstarted()
+            else:
+                reader.thread.join(max(0, deadline - time.monotonic()))
+            if reader.thread.is_alive() or not reader.stream.closed:
+                raise RuntimeError("Independent resource reader closure unconfirmed")
+        for entry in ledger:
+            if not entry["close_confirmed"]:
+                if not observer.wait(entry["handle"], max(0, deadline - time.monotonic())):
+                    raise RuntimeError("Observer resource exit unconfirmed before owner cleanup")
+                observer.close(entry["handle"])
+                entry["owner_closed_after_native_exit"] = True
+        for process in processes:
+            if not process._handle.closed:
+                process.wait(timeout=0)
+                process._handle.Close()
+        for pin in observers:
+            observer.close(pin["handle"])
+        for job in jobs:
+            job.close()
+        result["all_acquired_resources_recovered_by_owner"] = True
+    real_print("WINDOWS_LIFECYCLE_RESULT=" + json.dumps(result), flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--leaf")
@@ -452,6 +790,11 @@ def main() -> None:
     parser.add_argument("--seconds", type=float, default=LEAF_SECONDS)
     parser.add_argument("--scenario")
     parser.add_argument("--actual-cli", action="store_true")
+    parser.add_argument("--resource-mode", choices=(
+        "reader_first_interrupt", "reader_second_interrupt", "reader_second_close_interrupt",
+        "reader_start_interrupt",
+        "pin_birth_close", "member_admission_close", "member_query_close",
+    ))
     parser.add_argument("--finalizer-mode", choices=(
         "event_oserror", "event_interrupt", "finish_wait_interrupt", "multiple_finalizers",
         "reader_finalizer_interrupt", "pin_close_secondary_interrupt",
@@ -462,6 +805,8 @@ def main() -> None:
         leaf(Path(args.leaf), args.seconds)
     elif args.parent:
         parent(Path(args.parent))
+    elif args.scenario and args.resource_mode:
+        resource_scenario(Path(args.scenario), args.resource_mode, args.actual_cli)
     elif args.scenario and args.finalizer_mode:
         finalizer_scenario(Path(args.scenario), args.finalizer_mode, args.actual_cli)
     elif args.scenario and args.mode:

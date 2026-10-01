@@ -25,7 +25,9 @@ def fixture_environment(root: Path) -> dict[str, str]:
     }
 
 
-def finite_scenario(mode: str, *, finalizer: bool = False, actual_cli: bool = False) -> dict:
+def finite_scenario(
+    mode: str, *, finalizer: bool = False, actual_cli: bool = False, resource: bool = False,
+) -> dict:
     root = Path(tempfile.mkdtemp(prefix="android-owned-windows-"))
     output: list[str] = []
     restoration_safe = True
@@ -33,7 +35,8 @@ def finite_scenario(mode: str, *, finalizer: bool = False, actual_cli: bool = Fa
         try:
             code = windows.run_command(
                 [sys.executable, "-I", "-S", "-B", "-W", "error::ResourceWarning", "-u",
-                 str(WORKER), "--scenario", str(root), "--finalizer-mode" if finalizer else "--mode", mode,
+                 str(WORKER), "--scenario", str(root),
+                 "--resource-mode" if resource else "--finalizer-mode" if finalizer else "--mode", mode,
                  *(["--actual-cli"] if actual_cli else [])],
                 root, output.append, env=fixture_environment(root),
             )

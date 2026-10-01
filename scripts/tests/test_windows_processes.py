@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import io
 import json
+import ctypes
 from pathlib import Path
 import sys
 import tempfile
@@ -163,6 +164,175 @@ class WindowsFinalizerTest(unittest.TestCase):
         failure = next(item for item in diagnostic["failures"] if item["stage"] == "process_handles.close")
         self.assertEqual("BaseExceptionGroup", failure["type"])
         self.assertGreaterEqual(len(failure["children"]), 3)
+
+
+@unittest.skipUnless(os.name == "nt", "Native acquired-observer and partial-pipe ownership")
+class WindowsResourceOwnershipTest(unittest.TestCase):
+    def test_observer_record_allocation_precedes_any_native_handle_acquisition(self) -> None:
+        with mock.patch.object(windows.ProcessPin, "__init__", side_effect=KeyboardInterrupt()), \
+                mock.patch.object(windows.native(), "duplicate") as duplicate, \
+                mock.patch.object(windows.native().kernel, "OpenProcess") as open_process:
+            with self.assertRaises(KeyboardInterrupt):
+                windows.ProcessPin.from_process(SimpleNamespace(pid=123, _handle=456))
+            with self.assertRaises(KeyboardInterrupt):
+                windows.ProcessPin.open(123)
+        duplicate.assert_not_called()
+        open_process.assert_not_called()
+
+    def resource_case(self, mode: str, *, actual_cli: bool = False) -> dict:
+        result = finite_scenario(mode, resource=True, actual_cli=actual_cli)
+        self.assertTrue(result["every_acquired_handle_closed_or_retained"], result)
+        self.assertTrue(result["all_acquired_resources_recovered_by_owner"], result)
+        self.assertTrue(result["later_plants_absent"], result)
+        return result
+
+    def assert_unstarted_pipes_closed(self, mode: str) -> None:
+        result = self.resource_case(mode)
+        self.assertEqual("KeyboardInterrupt", result["exception_type"])
+        self.assertFalse(result["consumer_started"], "reader allocation precedes Job admission and consumer release")
+        self.assertTrue(result["native_root_exits"][-1])
+        self.assertEqual({"stdout": True, "stderr": True}, result["source_pipes_closed"][-1])
+        self.assertEqual({}, result["open_native_pipe_types"][-1])
+        self.assertFalse(result["plant_retained"], "ordinary restoration follows both real pipe closures")
+
+    def test_first_reader_construction_interrupt_closes_both_actual_unstarted_pipes(self) -> None:
+        self.assert_unstarted_pipes_closed("reader_first_interrupt")
+
+    def test_second_reader_construction_interrupt_closes_both_actual_unstarted_pipes(self) -> None:
+        self.assert_unstarted_pipes_closed("reader_second_interrupt")
+
+    def test_reader_start_interrupt_closes_started_pipes_only_through_their_reader(self) -> None:
+        self.assert_unstarted_pipes_closed("reader_start_interrupt")
+
+    def test_partial_pipe_close_interrupt_is_unsafe_and_retains_the_plant(self) -> None:
+        result = self.resource_case("reader_second_close_interrupt")
+        self.assertEqual("UnsafeProcessTreeError", result["exception_type"])
+        self.assertFalse(result["consumer_started"])
+        self.assertTrue(result["native_root_exits"][-1])
+        self.assertTrue(result["plant_retained"])
+        self.assertEqual({"stdout": True, "stderr": False}, result["source_pipes_closed"][-1])
+        self.assertEqual({"stderr": 3}, result["open_native_pipe_types"][-1])
+        self.assertFalse(result["diagnostic"]["confirmation"]["pipes_released"])
+        self.assertEqual(2, result["diagnostic"]["confirmation"]["expected_pipe_count"])
+        self.assertTrue(any(
+            process["pid"] == result["root_identities"][-1]["pid"] and process["created"] is None
+            for process in result["diagnostic"]["processes"]
+        ), "an unqueried creation-owned root must still have an explicit identity record")
+        self.assertTrue(any(
+            failure["stage"] == "pipe.stderr.close_unstarted" and failure["type"] == "KeyboardInterrupt"
+            for failure in result["diagnostic"]["failures"]
+        ))
+        self.assertLess(result["source_seconds"], windows.TEARDOWN_SECONDS + 2)
+
+    def test_birth_query_and_close_refusal_retains_the_real_creation_owned_duplicate(self) -> None:
+        result = self.resource_case("pin_birth_close")
+        self.assertEqual("UnsafeProcessTreeError", result["exception_type"])
+        self.assertFalse(result["consumer_started"])
+        self.assertTrue(result["native_root_exits"][-1])
+        self.assertTrue(result["plant_retained"])
+        duplicate = next(entry for entry in result["acquired_observer_ledger"] if entry["kind"] == "duplicate")
+        self.assertTrue(duplicate["valid_at_error"])
+        self.assertTrue(duplicate["retained_at_error"])
+        observer = next(
+            entry for entry in result["diagnostic"]["pending_observers"] if entry["pid"] == duplicate["pid"]
+        )
+        self.assertIsNone(observer["created"], "source birth query was refused; independent proof is not borrowed")
+        self.assertEqual("observe_only", observer["authority"])
+        stages = {failure["stage"] for failure in result["diagnostic"]["failures"]}
+        self.assertIn("process_pin.initialize.birth_query", stages)
+        self.assertIn("process_pin.initialize.close", stages)
+
+    def assert_admission_ledger(self, *, actual_cli: bool = False) -> None:
+        result = self.resource_case("member_admission_close", actual_cli=actual_cli)
+        self.assertTrue(result["plant_retained"])
+        self.assertEqual(1, result["unsafe_constructions"])
+        self.assertTrue(result["same_canonical_unsafe"])
+        failed = [entry for entry in result["acquired_observer_ledger"] if not entry["close_confirmed"]]
+        self.assertTrue(failed, result)
+        self.assertTrue(all(entry["valid_at_error"] and entry["retained_at_error"] for entry in failed))
+        self.assertTrue(all(entry["inside_source_created_job"] for entry in failed))
+        self.assertTrue(all(not entry["access"] & 1 for entry in failed), "observer acquisition lacks termination rights")
+        diagnostic = result["diagnostic"]
+        if actual_cli:
+            self.assertEqual(1, result["cli_exit_code"])
+            stderr = result["operator_stderr"]
+            self.assertNotIn("Traceback", stderr)
+            self.assertNotIn("C:\\", stderr)
+            self.assertNotIn("SYNTHETIC_PRIVATE_DIAGNOSTIC_CANARY", stderr)
+            diagnostic = json.loads(stderr.removeprefix("WINDOWS_PROCESS_RECOVERY "))
+        known = {(entry["pid"], entry["created"]) for entry in diagnostic["processes"]}
+        self.assertTrue(all((entry["pid"], entry["created"]) in known for entry in failed))
+        self.assertGreaterEqual(len(diagnostic["pending_observers"]), len(failed))
+        unconfirmed = {(entry["pid"], entry["created"]) for entry in diagnostic["unconfirmed_identities"]}
+        self.assertTrue(all((entry["pid"], entry["created"]) in unconfirmed for entry in failed),
+                        "other admitted native exits cannot confirm a still-pending observer")
+        self.assertFalse(diagnostic["restoration_safe"])
+        stages = {failure["stage"] for failure in diagnostic["failures"]}
+        self.assertIn("process_member.admission", stages)
+        self.assertIn("process_member.close", stages)
+
+    def test_admission_and_close_refusals_retain_every_acquired_observer_and_known_identity(self) -> None:
+        self.assert_admission_ledger()
+
+    def test_actual_cli_reports_every_pending_admission_observer_without_omitting_child_identity(self) -> None:
+        self.assert_admission_ledger(actual_cli=True)
+
+    def test_member_birth_query_and_close_refusal_retains_explicitly_unknown_creation_identity(self) -> None:
+        result = self.resource_case("member_query_close")
+        self.assertTrue(result["plant_retained"])
+        child = result["child_identity"]
+        observers = [entry for entry in result["diagnostic"]["pending_observers"] if entry["pid"] == child["pid"]]
+        self.assertTrue(observers)
+        self.assertTrue(all(entry["created"] is None for entry in observers))
+        self.assertTrue(any(
+            entry["pid"] == child["pid"] and entry["created"] is None
+            for entry in result["diagnostic"]["unconfirmed_identities"]
+        ))
+
+    def test_nonmember_observer_is_retained_for_release_not_adopted_as_process_control_authority(self) -> None:
+        from windows_process_worker import _ResourceObserver
+
+        observer = _ResourceObserver()
+        with tempfile.TemporaryDirectory(prefix="android-observer-authority-") as temporary:
+            exits = windows.ProcessExits(Path(temporary))
+            job = windows.WindowsJob()
+            acquired = []
+            original_open = windows.native().kernel.OpenProcess
+            original_close = windows.native().kernel.CloseHandle
+            unsafe = None
+
+            def open_process(*args):
+                handle = original_open(*args)
+                if handle:
+                    acquired.append(handle)
+                return handle
+
+            def refuse_close(handle):
+                if handle in acquired:
+                    ctypes.set_last_error(6)
+                    return 0
+                return original_close(handle)
+
+            try:
+                with mock.patch.object(job, "process_ids", return_value=[os.getpid()]), \
+                        mock.patch.object(windows.native().kernel, "OpenProcess", side_effect=open_process), \
+                        mock.patch.object(windows.native().kernel, "CloseHandle", side_effect=refuse_close):
+                    with self.assertRaises(windows.UnsafeProcessTreeError) as raised:
+                        exits.add_members(job)
+                unsafe = raised.exception
+                self.assertFalse(exits.pins, "a foreign process observer must not become admitted Job ownership")
+                self.assertEqual(1, len(acquired))
+                self.assertTrue(observer.valid(acquired[0]))
+                self.assertTrue(any(resource.handle == acquired[0] for resource in unsafe.pending_resources))
+                job.terminate()  # The empty created Job cannot terminate the nonmember test process.
+                self.assertFalse(observer.wait(acquired[0]))
+                self.assertEqual("observe_only", unsafe.diagnostic()["pending_observers"][0]["authority"])
+            finally:
+                for resource in getattr(unsafe, "pending_resources", []):
+                    if isinstance(resource, windows.ProcessPin):
+                        resource.close()
+                exits.close()
+                job.close()
 
 
 @unittest.skipUnless(os.name == "nt", "Windows pre-execution ownership")
