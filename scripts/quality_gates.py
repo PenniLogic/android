@@ -79,8 +79,10 @@ CI_PROVENANCE_SCRIPT = r"""
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import java.nio.file.Files
+import java.nio.file.FileVisitResult
 import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 import java.security.MessageDigest
 
@@ -92,24 +94,68 @@ class CIProducerEvidence implements Action<Task>, Serializable {
     List<String> files
     String executionData
 
-    Path checked(String name, boolean directory) {
+    Path physical(String name, Path boundary, Boolean directory = null,
+                  boolean required = false, boolean recursive = false) {
         def path = new File(name).toPath().toAbsolutePath().normalize()
-        if (!path.startsWith(new File(root).toPath().resolve("app").resolve("build"))) {
-            throw new GradleException("CI producer output is outside this checkout")
+        if (!path.startsWith(boundary)) {
+            throw new GradleException("CI native path is outside its admitted input/output scope")
         }
         for (def ancestor = path; ancestor != null; ancestor = ancestor.parent) {
             if (Files.exists(ancestor, LinkOption.NOFOLLOW_LINKS)) {
                 def attrs = Files.readAttributes(ancestor, BasicFileAttributes, LinkOption.NOFOLLOW_LINKS)
                 if (Files.isSymbolicLink(ancestor) || attrs.isOther() || ancestor.toRealPath() != ancestor) {
-                    throw new GradleException("CI producer link/reparse output is refused")
+                    throw new GradleException("CI native link/reparse path is refused")
+                }
+                if ((!attrs.isDirectory() && !attrs.isRegularFile()) ||
+                    (ancestor != path && !attrs.isDirectory())) {
+                    throw new GradleException("CI native path has an unsupported file/ancestor type")
                 }
             }
         }
-        if (directory ? !Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS) :
-                        !Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) {
-            throw new GradleException("CI producer output is missing or has the wrong type")
+        def exists = Files.exists(path, LinkOption.NOFOLLOW_LINKS)
+        if ((required && !exists) ||
+            (exists && directory != null && directory != Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS))) {
+            throw new GradleException("CI native path is missing or has the wrong type")
+        }
+        if (recursive && exists && Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+            Files.newDirectoryStream(path).withCloseable { children ->
+                children.each { child -> physical(child.toString(), boundary, null, false, true) }
+            }
         }
         path
+    }
+
+    Path checked(String name, boolean directory) {
+        physical(name, new File(root).toPath().resolve("app").resolve("build"), directory, true)
+    }
+
+    void invalidate(String name, boolean directory) {
+        def boundary = new File(root).toPath().resolve("app").resolve("build")
+        def path = physical(name, boundary, directory, false, true)
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            return
+        }
+        if (directory) {
+            def guard = this
+            Files.walkFileTree(path, new SimpleFileVisitor<Path>() {
+                FileVisitResult visitFile(Path file, BasicFileAttributes attributes) {
+                    guard.physical(file.toString(), boundary, false, true)
+                    Files.delete(file)
+                    FileVisitResult.CONTINUE
+                }
+
+                FileVisitResult postVisitDirectory(Path folder, IOException error) {
+                    if (error != null) {
+                        throw error
+                    }
+                    guard.physical(folder.toString(), boundary, true, true)
+                    Files.delete(folder)
+                    FileVisitResult.CONTINUE
+                }
+            })
+        } else {
+            Files.delete(path)
+        }
     }
 
     void execute(Task ignored) {
@@ -159,8 +205,14 @@ class CIProducerEvidence implements Action<Task>, Serializable {
 
 def settings = new JsonSlurper().parseText(new String(Base64.decoder.decode("__SETTINGS__"), "UTF-8"))
 gradle.projectsEvaluated {
+    def checkout = new File(settings.root).toPath()
     def app = gradle.rootProject.project(":app")
-    settings.producers.each { producer ->
+    if (gradle.rootProject.projectDir.toPath().toAbsolutePath().normalize() != checkout ||
+        app.projectDir.toPath().toAbsolutePath().normalize() != checkout.resolve("app") ||
+        app.layout.buildDirectory.get().asFile.toPath().toAbsolutePath().normalize() != checkout.resolve("app").resolve("build")) {
+        throw new GradleException("CI native project/build ownership changed")
+    }
+    def admitted = settings.producers.collect { producer ->
         def task = app.tasks.named(producer.task).get()
         def declared = task.outputs.files.files.collect { it.toPath().toAbsolutePath().normalize().toString() }
         if (!declared.containsAll(producer.declared)) {
@@ -171,13 +223,64 @@ gradle.projectsEvaluated {
             if (jacoco.destinationFile.toPath().toAbsolutePath().normalize().toString() != producer.executionData) {
                 throw new GradleException("CI debug execution-data destination changed")
             }
-            jacoco.sessionId = settings.invocation
+        }
+        [task: task, producer: producer]
+    }
+    def guard = new CIProducerEvidence(root: settings.root)
+    def declared = settings.producers.collectMany { it.declared } as Set
+    settings.outputs.each { output ->
+        if (!declared.contains(output.path)) {
+            throw new GradleException("CI consumed evidence is not owned by an admitted native producer")
+        }
+        guard.physical(output.path, checkout.resolve("app").resolve("build"), output.directory, false, true)
+    }
+    settings.inputs.each { input ->
+        guard.physical(input.path, checkout, input.directory, false, input.directory)
+    }
+    def sourceScope = checkout.resolve("app").resolve("src")
+    def configuredInputs = [:]
+    def android = app.extensions.getByName("android")
+    android.sourceSets.each { sourceSet ->
+        sourceSet.properties.values().findAll {
+            it != null && !it.metaClass.respondsTo(it, "getSrcDirs").isEmpty()
+        }.each { directories ->
+            directories.srcDirs.each { source ->
+                def path = guard.physical(source.absolutePath, sourceScope, true)
+                configuredInputs[path.toString()] = true
+            }
+        }
+        def manifest = guard.physical(sourceSet.manifest.srcFile.absolutePath, sourceScope, false)
+        configuredInputs[manifest.toString()] = false
+    }
+    if (configuredInputs.isEmpty()) {
+        throw new GradleException("CI native configured source roots are missing")
+    }
+    configuredInputs.each { path, directory ->
+        guard.physical(path, sourceScope, directory, false, directory)
+    }
+    admitted.each { entry ->
+        def task = entry.task
+        def producer = entry.producer
+        if (producer.executionData != null) {
+            task.extensions.getByName("jacoco").sessionId = settings.invocation
         }
         task.doLast(new CIProducerEvidence(
             invocation: settings.invocation, root: settings.root, taskPath: task.path,
             directories: producer.directories, files: producer.files, executionData: producer.executionData,
         ))
     }
+    settings.outputs.each { output -> guard.invalidate(output.path, output.directory) }
+    println("CI_NATIVE_PREFLIGHT " + JsonOutput.toJson([
+        invocation: settings.invocation,
+        source_inputs: configuredInputs.collect { name, directory ->
+            [path: checkout.relativize(new File(name).toPath()).toString().replace(File.separator, "/"),
+             directory: directory]
+        }.sort { it.path },
+        outputs: settings.outputs.collect {
+            checkout.relativize(new File(it.path).toPath()).toString().replace(File.separator, "/")
+        }.sort(),
+        producer_tasks: admitted.collect { it.task.path }.sort(),
+    ]))
 }
 """
 
@@ -457,10 +560,10 @@ def ci_evidence_paths() -> tuple[tuple[Path, bool], ...]:
     )
 
 
-def check_ci_evidence_path(path: Path) -> None:
+def check_ci_physical_path(path: Path, boundary: Path) -> None:
     lexical = path.absolute()
-    if APP.absolute() != (ROOT / "app").absolute() or not lexical.is_relative_to((APP / "build").absolute()):
-        raise InvalidCIEvidence(f"evidence path is outside this checkout's app build: {path}")
+    if not lexical.is_relative_to(boundary.absolute()):
+        raise InvalidCIEvidence(f"path is outside its admitted checkout scope: {path}")
     for ancestor in (lexical, *lexical.parents):
         try:
             attributes = ancestor.lstat()
@@ -474,22 +577,40 @@ def check_ci_evidence_path(path: Path) -> None:
         raise InvalidCIEvidence(f"aliased evidence path is refused: {path}")
     if lexical.is_dir():
         for child in lexical.iterdir():
-            check_ci_evidence_path(child)
+            check_ci_physical_path(child, boundary)
+
+
+def check_ci_evidence_path(path: Path) -> None:
+    if APP.absolute() != (ROOT / "app").absolute():
+        raise InvalidCIEvidence("application root is not bound to this checkout")
+    check_ci_physical_path(path, APP / "build")
+
+
+def ci_input_paths() -> tuple[tuple[Path, bool], ...]:
+    return (
+        (APP / "src", True),
+        (ROOT / "gradle", True),
+        *((ROOT / name, False) for name in (
+            "settings.gradle.kts", "settings.gradle", "build.gradle.kts", "build.gradle",
+            "gradle.properties", "gradlew", "gradlew.bat",
+        )),
+        (APP / "build.gradle.kts", False),
+        (APP / "build.gradle", False),
+    )
 
 
 def prepare_ci_evidence() -> None:
-    # Check every consumed output before removing any; fresh files, not mtimes, prove provenance.
-    outputs = ci_evidence_paths()
-    for path, directory in outputs:
+    # Python admits paths only; native declarations authorize the later same-graph invalidation.
+    if APP.absolute() != (ROOT / "app").absolute():
+        raise InvalidCIEvidence("application root is not bound to this checkout")
+    for path, directory in ci_input_paths():
+        check_ci_physical_path(path, ROOT)
+        if path.exists() and path.is_dir() != directory:
+            raise InvalidCIEvidence(f"unexpected source/input path type: {path}")
+    for path, directory in ci_evidence_paths():
         check_ci_evidence_path(path)
         if path.exists() and path.is_dir() != directory:
             raise InvalidCIEvidence(f"unexpected evidence output type: {path}")
-    for path, directory in outputs:
-        if path.exists():
-            if directory:
-                shutil.rmtree(path)
-            else:
-                path.unlink()
 
 
 def run_ci_gradle(invocation: str) -> GradleRun:
@@ -515,6 +636,8 @@ def run_ci_gradle(invocation: str) -> GradleRun:
         })
     settings = base64.b64encode(json.dumps({
         "invocation": invocation, "root": str(ROOT), "producers": producers,
+        "outputs": [{"path": str(path), "directory": directory} for path, directory in outputs],
+        "inputs": [{"path": str(path), "directory": directory} for path, directory in ci_input_paths()],
     }).encode("utf-8")).decode("ascii")
     build = APP / "build"
     check_ci_evidence_path(build / "ci-native-provenance-parent")
@@ -549,6 +672,38 @@ def ci_producer_paths() -> dict[str, tuple[Path, ...]]:
     for index, task in enumerate(CI_REPORT_TASKS):
         result[f":app:{task}"] = (outputs[index + 2][0] if index < 2 else outputs[5][0] / "report.xml",)
     return result
+
+
+def validate_ci_preflight(console: str, invocation: str) -> dict[str, object]:
+    lines = [line.removeprefix("CI_NATIVE_PREFLIGHT ") for line in console.splitlines() if line.startswith("CI_NATIVE_PREFLIGHT ")]
+    if len(lines) != 1:
+        raise InvalidCIEvidence("current native preflight evidence is missing or duplicated")
+    try:
+        proof = json.loads(lines[0])
+    except json.JSONDecodeError as error:
+        raise InvalidCIEvidence("malformed current native preflight evidence") from error
+    if not isinstance(proof, dict) or set(proof) != {"invocation", "source_inputs", "outputs", "producer_tasks"}:
+        raise InvalidCIEvidence("invalid current native preflight evidence shape")
+    if proof["invocation"] != invocation:
+        raise InvalidCIEvidence("native preflight belongs to another invocation")
+    expected_outputs = sorted(path.relative_to(ROOT).as_posix() for path, _ in ci_evidence_paths())
+    expected_tasks = sorted(f":app:{task}" for task in (*UNIT_TEST_TASKS, *CI_REPORT_TASKS))
+    if proof["outputs"] != expected_outputs or proof["producer_tasks"] != expected_tasks:
+        raise InvalidCIEvidence("native preflight does not bind all consumed outputs to the expected producers")
+    inputs = proof["source_inputs"]
+    if not isinstance(inputs, list) or not inputs:
+        raise InvalidCIEvidence("native preflight has no configured source inputs")
+    names: set[str] = set()
+    for item in inputs:
+        if not isinstance(item, dict) or set(item) != {"path", "directory"}:
+            raise InvalidCIEvidence("invalid native configured source input")
+        name = item["path"]
+        if not isinstance(name, str) or not name.startswith("app/src/") or "\\" in name or ".." in name.split("/"):
+            raise InvalidCIEvidence("native configured source input is outside the admitted source scope")
+        if name in names or not isinstance(item["directory"], bool):
+            raise InvalidCIEvidence("duplicate or untyped native configured source input")
+        names.add(name)
+    return proof
 
 
 def validate_ci_producers(console: str, invocation: str) -> None:
@@ -725,6 +880,7 @@ def run_ci() -> int:
         gradle_exit_code=run.exit_code,
     )
     try:
+        metrics["preflight"] = validate_ci_preflight(run.console, invocation)
         validate_ci_reports(invocation)
         validate_ci_producers(run.console, invocation)
     except (InvalidCIEvidence, OSError) as error:

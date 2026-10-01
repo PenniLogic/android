@@ -789,7 +789,7 @@ class QualityGatesTest(unittest.TestCase):
         )
 
     def ci_proofs(self, invocation: str = CI_TEST_INVOCATION) -> str:
-        lines = []
+        lines = [self.ci_preflight(invocation)]
         for task, paths in quality_gates.ci_producer_paths().items():
             fingerprints = {}
             for path in paths:
@@ -797,6 +797,22 @@ class QualityGatesTest(unittest.TestCase):
                     fingerprints[path.relative_to(self.root).as_posix()] = quality_gates.hashlib.file_digest(data, "sha256").hexdigest()
             lines.append("CI_NATIVE_EVIDENCE " + json.dumps({"invocation": invocation, "task": task, "files": fingerprints}))
         return "\n".join(lines) + "\n"
+
+    def ci_preflight(self, invocation: str = CI_TEST_INVOCATION) -> str:
+        return "CI_NATIVE_PREFLIGHT " + json.dumps({
+            "invocation": invocation,
+            "source_inputs": [{"path": "app/src/main/kotlin", "directory": True}],
+            "outputs": sorted(path.relative_to(self.root).as_posix() for path, _ in quality_gates.ci_evidence_paths()),
+            "producer_tasks": sorted(f":app:{task}" for task in (*quality_gates.UNIT_TEST_TASKS, *quality_gates.CI_REPORT_TASKS)),
+        })
+
+    def simulate_native_ci_invalidation(self) -> None:
+        for path, directory in quality_gates.ci_evidence_paths():
+            if path.exists():
+                if directory:
+                    quality_gates.shutil.rmtree(path)
+                else:
+                    path.unlink()
 
     def assert_ci_native_call(self, run) -> None:
         run.assert_called_once()
@@ -811,6 +827,7 @@ class QualityGatesTest(unittest.TestCase):
         def native(tasks, extra):
             self.assertEqual(quality_gates.ci_tasks(), tasks)
             self.assertTrue(Path(extra[1]).is_file())
+            self.simulate_native_ci_invalidation()
             self.assertTrue(all(not path.exists() for path, _ in quality_gates.ci_evidence_paths()))
             self.write_ci_reports()
             proofs = self.ci_proofs()
@@ -838,6 +855,7 @@ class QualityGatesTest(unittest.TestCase):
         self.assertEqual(list(quality_gates.ORDER), record["gates"])
         self.assertEqual((40.0, 37.5), (record["duration_seconds"], record["native_duration_seconds"]))
         self.assertEqual(CI_TEST_INVOCATION, record["invocation_id"])
+        self.assertEqual([{"path": "app/src/main/kotlin", "directory": True}], record["preflight"]["source_inputs"])
         self.assertEqual({"testDebugUnitTest": "executed", "testReleaseUnitTest": "executed"}, record["unit_test_tasks"])
         self.assertEqual({"tests": 198, "failures": 0, "errors": 0, "skipped": 1}, record["unit_tests"]["debug"])
         self.assertEqual({"tests": 198, "failures": 0, "errors": 0, "skipped": 9}, record["unit_tests"]["release"])
@@ -917,7 +935,13 @@ class QualityGatesTest(unittest.TestCase):
         sibling = self.write("build/reports/coverage/test/release/sentinel.txt", "preserve")
         metrics = {"gate": "test", "exit_code": 0, "duration_seconds": 1.0}
         quality_gates.publish(metrics)
-        with mock.patch.object(quality_gates, "run_gradle", return_value=gradle_run(0, self.ci_console())) as run, \
+        def native(tasks, extra):
+            self.assertTrue(old_suite.exists(), "Python must not invalidate assumed outputs before native admission")
+            self.assertTrue(all(path.exists() for path, _ in quality_gates.ci_evidence_paths()))
+            self.simulate_native_ci_invalidation()
+            return gradle_run(0, self.ci_console() + self.ci_preflight() + "\n")
+        with mock.patch.object(quality_gates, "run_gradle", side_effect=native) as run, \
+                mock.patch.object(quality_gates.uuid, "uuid4", return_value=quality_gates.uuid.UUID(hex=CI_TEST_INVOCATION)), \
                 mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(1, quality_gates.run_ci())
         self.assert_ci_native_call(run)
@@ -1026,17 +1050,38 @@ class QualityGatesTest(unittest.TestCase):
         self.assertIn("does not describe the current debug execution-data session", record["refused"])
 
     def test_ci_refuses_missing_wrong_run_duplicate_or_malformed_native_producer_evidence(self) -> None:
+        def only_producers(change):
+            return lambda proof: proof.splitlines()[0] + "\n" + change("\n".join(proof.splitlines()[1:]) + "\n")
         mutations = (
-            lambda proof: "",
-            lambda proof: proof.replace(CI_TEST_INVOCATION, "previous-invocation"),
-            lambda proof: proof + proof.splitlines()[0] + "\n",
-            lambda proof: "CI_NATIVE_EVIDENCE invalid-json\n",
+            only_producers(lambda proof: ""),
+            only_producers(lambda proof: proof.replace(CI_TEST_INVOCATION, "previous-invocation")),
+            only_producers(lambda proof: proof + proof.splitlines()[0] + "\n"),
+            only_producers(lambda proof: "CI_NATIVE_EVIDENCE invalid-json\n"),
         )
         for mutation in mutations:
             with self.subTest(mutation=mutation):
                 record = self.invoke_ci(proof_tamper=mutation)
                 self.assertEqual(1, record["exit_code"])
                 self.assertIn("native producer", record["refused"])
+                quality_gates.METRICS_FILE.unlink()
+
+    def test_ci_refuses_missing_replayed_unbound_or_aliased_native_source_preflight_evidence(self) -> None:
+        preflight = json.loads(self.ci_preflight().removeprefix("CI_NATIVE_PREFLIGHT "))
+        for mutation in (
+            lambda proof: "",
+            lambda proof: proof + "\n" + proof,
+            lambda proof: proof.replace(CI_TEST_INVOCATION, "previous-native-run"),
+            lambda proof: proof.replace("app/src/main/kotlin", "app/outside/kotlin"),
+            lambda proof: proof.replace("app/src/main/kotlin", "app/src/../outside"),
+            lambda proof: proof.replace(":app:lintReportRelease", ":other:lintReportRelease"),
+        ):
+            with self.subTest(mutation=mutation):
+                altered = mutation("CI_NATIVE_PREFLIGHT " + json.dumps(preflight))
+                def change(proofs):
+                    return altered + "\n" + "\n".join(proofs.splitlines()[1:]) + "\n"
+                record = self.invoke_ci(proof_tamper=change)
+                self.assertEqual(1, record["exit_code"])
+                self.assertIn("native", record["refused"])
                 quality_gates.METRICS_FILE.unlink()
 
     def test_ci_refuses_valid_reports_replaced_after_the_native_producer_observed_them(self) -> None:
@@ -1105,14 +1150,69 @@ class QualityGatesTest(unittest.TestCase):
         record = json.loads(quality_gates.METRICS_FILE.read_text(encoding="utf-8"))[-1]
         self.assertIn("unexpected evidence output type", record["refused"])
 
-    def test_ci_surfaces_undeletable_evidence_without_launching_gradle(self) -> None:
+    def test_ci_python_preparation_checks_inputs_and_outputs_but_never_invalidates_evidence(self) -> None:
         self.write_ci_reports()
-        with mock.patch.object(quality_gates.shutil, "rmtree", side_effect=PermissionError("locked current output")), \
-                mock.patch.object(quality_gates, "run_gradle") as run, mock.patch.dict(os.environ, {}, clear=True):
+        evidence = {path: path.read_bytes() for paths in quality_gates.ci_producer_paths().values() for path in paths}
+        with mock.patch.object(quality_gates.shutil, "rmtree") as remove_tree, \
+                mock.patch.object(Path, "unlink") as remove_file:
+            quality_gates.prepare_ci_evidence()
+        remove_tree.assert_not_called()
+        remove_file.assert_not_called()
+        self.assertTrue(all(path.read_bytes() == content for path, content in evidence.items()))
+
+    def test_ci_native_declaration_refusal_preserves_every_assumed_evidence_output(self) -> None:
+        self.write_ci_reports()
+        evidence = {path: path.read_bytes() for paths in quality_gates.ci_producer_paths().values() for path in paths}
+        def refused_native(tasks, extra):
+            self.assertTrue(all(path.read_bytes() == content for path, content in evidence.items()))
+            return gradle_run(1, "CI native task output contract changed: :app:createDebugUnitTestCoverageReport\n")
+        with mock.patch.object(quality_gates, "run_gradle", side_effect=refused_native), \
+                mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(1, quality_gates.run_ci())
-        run.assert_not_called()
-        record = json.loads(quality_gates.METRICS_FILE.read_text(encoding="utf-8"))[-1]
-        self.assertIn("locked current output", record["refused"])
+        self.assertTrue(all(path.read_bytes() == content for path, content in evidence.items()))
+
+    def test_ci_refuses_source_and_configuration_reparse_ancestors_before_native_launch(self) -> None:
+        self.write_ci_reports()
+        evidence = {path: path.read_bytes() for paths in quality_gates.ci_producer_paths().values() for path in paths}
+        original = Path.lstat
+        attributes = mock.Mock(st_mode=stat.S_IFDIR, st_file_attributes=stat.FILE_ATTRIBUTE_REPARSE_POINT)
+        for source in (self.app / "src", self.root / "gradle"):
+            with self.subTest(root=source):
+                source.mkdir()
+                def lstat(path):
+                    return attributes if path == source else original(path)
+                with mock.patch.object(Path, "lstat", lstat), \
+                        mock.patch.object(quality_gates, "run_gradle") as run, mock.patch.dict(os.environ, {}, clear=True):
+                    self.assertEqual(1, quality_gates.run_ci())
+                run.assert_not_called()
+                self.assertTrue(all(path.read_bytes() == content for path, content in evidence.items()))
+
+    @unittest.skipUnless(os.name == "nt", "Actual Windows source junction control")
+    def test_ci_refuses_real_inside_and_outside_source_junctions_before_any_invalidation(self) -> None:
+        self.write_ci_reports()
+        evidence = {path: path.read_bytes() for paths in quality_gates.ci_producer_paths().values() for path in paths}
+        with tempfile.TemporaryDirectory() as outside_name:
+            targets = (self.root / "owned-source-target", Path(outside_name) / "owned-source-target")
+            for target in targets:
+                target.mkdir()
+                sentinel = target / "sentinel.txt"
+                sentinel.write_text("preserve source", encoding="ascii")
+                alias = self.app / "src"
+                environment = dict(os.environ, CI_SOURCE_ALIAS=str(alias), CI_SOURCE_TARGET=str(target))
+                quality_gates.subprocess.run(
+                    ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                     "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:CI_SOURCE_ALIAS -Target $env:CI_SOURCE_TARGET | Out-Null"],
+                    env=environment, check=True, capture_output=True, text=True,
+                )
+                try:
+                    self.assertTrue(alias.is_junction())
+                    with mock.patch.object(quality_gates, "run_gradle") as run, mock.patch.dict(os.environ, {}, clear=True):
+                        self.assertEqual(1, quality_gates.run_ci())
+                    run.assert_not_called()
+                    self.assertTrue(all(path.read_bytes() == content for path, content in evidence.items()))
+                    self.assertEqual("preserve source", sentinel.read_text(encoding="ascii"))
+                finally:
+                    alias.rmdir()
 
     def test_ci_refuses_outside_paths_and_mocked_reparse_ancestors(self) -> None:
         with self.assertRaises(quality_gates.InvalidCIEvidence):

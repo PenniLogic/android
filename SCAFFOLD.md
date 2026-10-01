@@ -174,12 +174,24 @@ tasks still carry `--rerun`; test and coverage share that same newly executed de
 previous invocation's results. Report-producing tasks also carry `--rerun`. Compilation and other
 native work remain cacheable, with the same `--no-daemon` and process-ownership boundary.
 
-Before starting Gradle, this command invalidates only its consumed task-declared outputs: the two
-JUnit result directories, both lint XML files, debug JaCoCo execution data and the debug coverage
-report directory. All existing ancestors and output descendants must be physical, non-reparse
-paths inside this checkout's `app/build`; aliases and unexpected output types are refused before
-any removal. Previous metrics, sources, test fixtures and caches are not removed. No freshness
-decision uses file timestamps.
+Before starting Gradle, Python checks physical source/input trees and their ancestors, including
+`app/src`, build configuration and the wrapper/catalogue inputs, plus all six evidence paths.
+It does not invalidate any evidence. Source or output aliases, reparse ancestors/descendants and
+unexpected path types are refused before native launch, preserving every existing evidence file.
+
+Inside the same native graph, the init script first verifies the actual root/application/build
+locations, every consumed task-declared output and the debug JaCoCo destination. It also binds the
+configured Android source-set directories and manifests to the admitted physical `app/src` scope.
+All declaration, source and output checks finish before the first invalidation. A changed early
+or late declaration, changed JaCoCo destination or unsafe configured source root leaves all six
+evidence paths untouched. No second configuration graph or global cleaning is used.
+
+Only then does native configuration invalidate the two JUnit result directories, both lint XML
+files, debug JaCoCo execution data and the debug coverage report directory, before tasks/producers.
+A captured `CI_NATIVE_PREFLIGHT` record binds the configured sources and six outputs to the current
+invocation and its native producers. Previous metrics, sources, test fixtures and caches are not
+removed. No freshness decision uses file timestamps; these ownership checks are not a sandbox
+for hostile Gradle code.
 
 The returned native console must contain the exact application task paths, both executed test
 tasks and executed report producers. Reused tests/reports, unknown outcomes, missing tasks or
@@ -202,10 +214,10 @@ one was enforced where the scaffold only generates a report.
 
 Metrics contain one `gate: ci` record with `gates: ["build", "test", "lint", "coverage"]`, one
 `duration_seconds` wall-clock figure including evidence preparation/validation, the native
-`native_duration_seconds`, fresh `invocation_id`, exact `native_task_outcomes`, both variants'
-`unit_tests`, `lint_issues` and `coverage`. Refusals retain `gradle_exit_code` and name the refused
-evidence. There are no
-invented component durations or four copies of a shared duration to add together.
+`native_duration_seconds`, fresh `invocation_id`, verified native `preflight`, exact
+`native_task_outcomes`, both variants' `unit_tests`, `lint_issues` and `coverage`. Refusals retain
+`gradle_exit_code` and name the refused evidence. There are no invented component durations or
+four copies of a shared duration to add together.
 
 The existing `all`/standalone commands still execute debug tests separately for test and coverage.
 The entire native formatter probe and five-case `self-test`, including its executed clean recovery
