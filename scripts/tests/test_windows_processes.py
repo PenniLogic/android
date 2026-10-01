@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 from types import SimpleNamespace
@@ -66,8 +67,10 @@ class WindowsLifecycleTest(unittest.TestCase):
         self.assertEqual(1, len(result["retained_fixtures"]))
         self.assertTrue(next(iter(result["retained_fixtures"])).endswith("planted.kt"))
         self.assertTrue(result["recovery_processes"])
-        self.assertIn("recovery directory", result["unsafe_error"])
-        self.assertIn("pipes released=False", result["unsafe_error"])
+        diagnostic = json.loads(result["unsafe_error"].removeprefix("WINDOWS_PROCESS_RECOVERY "))
+        self.assertEqual(".", diagnostic["recovery_context"]["working_directory"])
+        self.assertFalse(diagnostic["confirmation"]["pipes_released"])
+        self.assertFalse(diagnostic["restoration_safe"])
         self.assertLess(result["delay_after_root_exit_seconds"], windows.TEARDOWN_SECONDS + 1.0)
 
     def test_refused_termination_is_not_hidden_even_when_fallback_exit_is_confirmed(self) -> None:
@@ -84,15 +87,108 @@ class WindowsLifecycleTest(unittest.TestCase):
         result = self.scenario("unsafe_exit")
         self.assertTrue(result["root_signaled_before_source_return"])
         self.assertTrue(result["child_signaled_before_source_return"])
-        self.assertIn("native exits=False", result["unsafe_error"])
-        self.assertIn("active members=0", result["unsafe_error"])
+        diagnostic = json.loads(result["unsafe_error"].removeprefix("WINDOWS_PROCESS_RECOVERY "))
+        self.assertFalse(diagnostic["confirmation"]["native_exits"])
+        self.assertEqual(0, diagnostic["confirmation"]["active_members"])
+        self.assertTrue(diagnostic["unconfirmed_identities"])
         self.assertEqual("synthetic planted fixture\n", result["planted_fixture_retained"])
         self.assertEqual(1, len(result["retained_fixtures"]))
         self.assertLess(result["delay_after_root_exit_seconds"], windows.TEARDOWN_SECONDS + 1.0)
 
 
+@unittest.skipUnless(os.name == "nt", "Real Windows finalizer precedence and operator diagnostics")
+class WindowsFinalizerTest(unittest.TestCase):
+    def finalizer_case(self, mode: str, *, actual_cli: bool = False) -> dict:
+        result = finite_scenario(mode, finalizer=True, actual_cli=actual_cli)
+        self.assertTrue(result["unsafe_constructed"], result)
+        self.assertFalse(result["root_signaled_at_error"], result)
+        self.assertFalse(result["child_signaled_at_error"], result)
+        self.assertFalse(result["read_pipes_closed_at_error"], result)
+        self.assertFalse(result["launcher_handle_closed_at_error"], result)
+        self.assertEqual(32, result["live_held_file_unlink_winerror"], result)
+        self.assertTrue(result["owner_recovery_exit_pipe_handle_confirmation"])
+        self.assertTrue(result["unsafe_preserved_as_primary"], result)
+        self.assertTrue(result["same_constructed_unsafe"], result)
+        self.assertTrue(result["pending_launcher_preserved"], result)
+        self.assertTrue(result["plant_retained_at_error"], result)
+        self.assertTrue(result["later_plants_aborted"], result)
+        self.assertLess(result["error_return_seconds"], windows.TEARDOWN_SECONDS + 2)
+        stderr = result["operator_cli_stderr"]
+        self.assertEqual(1, result["operator_cli_exit_code"])
+        self.assertNotIn("Traceback", stderr)
+        self.assertNotIn("SYNTHETIC_PRIVATE_DIAGNOSTIC_CANARY", stderr)
+        self.assertNotIn("C:\\", stderr)
+        diagnostic = json.loads(stderr.removeprefix("WINDOWS_PROCESS_RECOVERY ").strip())
+        self.assertFalse(diagnostic["restoration_safe"])
+        fixture = (
+            r"app\src\test\kotlin\com\pennilogic\android\PlantedFailingTest.kt" if actual_cli else "planted.kt"
+        )
+        self.assertIn(fixture, diagnostic["retained_fixtures"])
+        identities = {(item["pid"], item.get("created")) for item in diagnostic["processes"]}
+        self.assertIn((result["root"]["pid"], result["root"]["created"]), identities)
+        self.assertIn((result["child"]["pid"], result["child"]["created"]), identities)
+        self.assertTrue(any(item["native_exit"] == "unconfirmed" for item in diagnostic["processes"]))
+        self.assertTrue(diagnostic["failures"])
+        return result
+
+    def test_event_close_oserror_cannot_replace_an_unsafe_live_tree_error(self) -> None:
+        self.finalizer_case("event_oserror")
+
+    def test_late_event_close_interrupt_cannot_replace_an_unsafe_live_tree_error(self) -> None:
+        self.finalizer_case("event_interrupt")
+
+    def test_finalizer_wait_interrupt_preserves_constructed_but_not_yet_raised_unsafe(self) -> None:
+        self.finalizer_case("finish_wait_interrupt")
+
+    def test_primary_and_multiple_secondary_cleanup_failures_keep_recovery_information(self) -> None:
+        result = self.finalizer_case("multiple_finalizers")
+        diagnostic = json.loads(result["operator_cli_stderr"].removeprefix("WINDOWS_PROCESS_RECOVERY ").strip())
+        self.assertGreaterEqual(len(diagnostic["failures"]), 3)
+
+    def test_actual_cli_self_test_stops_and_renders_relative_creation_owned_recovery_on_oserror(self) -> None:
+        self.finalizer_case("event_oserror", actual_cli=True)
+
+    def test_actual_cli_self_test_stops_and_renders_secondary_interrupt_without_private_traceback(self) -> None:
+        self.finalizer_case("event_interrupt", actual_cli=True)
+
+    def test_reader_finalizer_interrupt_does_not_skip_the_remaining_owned_cleanup(self) -> None:
+        result = self.finalizer_case("reader_finalizer_interrupt")
+        diagnostic = json.loads(result["operator_cli_stderr"].removeprefix("WINDOWS_PROCESS_RECOVERY "))
+        self.assertTrue(any(item["stage"] == "reader.finalize" for item in diagnostic["failures"]))
+
+    def test_each_creation_pin_is_closed_or_reported_even_when_secondary_close_interrupts(self) -> None:
+        result = self.finalizer_case("pin_close_secondary_interrupt")
+        self.assertGreaterEqual(result["finalizer_faults"].count("process_handle.close"), 3)
+        diagnostic = json.loads(result["operator_cli_stderr"].removeprefix("WINDOWS_PROCESS_RECOVERY "))
+        failure = next(item for item in diagnostic["failures"] if item["stage"] == "process_handles.close")
+        self.assertEqual("BaseExceptionGroup", failure["type"])
+        self.assertGreaterEqual(len(failure["children"]), 3)
+
+
 @unittest.skipUnless(os.name == "nt", "Windows pre-execution ownership")
 class WindowsOwnershipTest(unittest.TestCase):
+    def assert_owned_initialization_interrupt_closes_handle(self, operation: str, factory) -> None:
+        closed = []
+        original = windows.native().close
+
+        def close(handle):
+            original(handle)
+            closed.append(handle)
+
+        with mock.patch.object(windows.native().kernel, operation, side_effect=KeyboardInterrupt()), \
+                mock.patch.object(windows.native(), "close", side_effect=close), \
+                mock.patch.object(windows.subprocess, "Popen") as start:
+            with self.assertRaises(KeyboardInterrupt):
+                factory()
+        start.assert_not_called()
+        self.assertEqual(1, len(closed))
+
+    def test_job_initialization_interrupt_closes_its_owned_native_handle_without_starting_a_consumer(self) -> None:
+        self.assert_owned_initialization_interrupt_closes_handle("SetInformationJobObject", windows.WindowsJob)
+
+    def test_release_event_initialization_interrupt_closes_its_owned_native_handle(self) -> None:
+        self.assert_owned_initialization_interrupt_closes_handle("SetHandleInformation", windows.ReleaseEvent)
+
     def test_job_creation_refusal_starts_nothing(self) -> None:
         with tempfile.TemporaryDirectory(prefix="android-ownership-") as temporary:
             with mock.patch.object(windows, "WindowsJob", side_effect=windows.ProcessOwnershipError("synthetic refusal")), \
@@ -276,6 +372,19 @@ class WindowsOwnershipTest(unittest.TestCase):
                 windows.ProcessPin.open(os.getpid(), created + 1)
         self.assertEqual(1, len(closed))
 
+    def test_command_execution_is_not_limited_by_the_teardown_budget(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="android-duration-") as temporary:
+            lines = []
+            started = time.monotonic()
+            result = windows.run_command(
+                [sys.executable, "-I", "-S", "-B", "-c",
+                 "import time; time.sleep(5.25); print('finite longer execution completed')"],
+                Path(temporary), lines.append,
+            )
+            self.assertEqual(0, result)
+            self.assertGreater(time.monotonic() - started, windows.TEARDOWN_SECONDS)
+            self.assertEqual(["finite longer execution completed\n"], lines)
+
 
 class RestorationBoundaryTest(unittest.TestCase):
     def test_only_typed_unsafe_failure_retains_fixture_with_recoverable_location(self) -> None:
@@ -288,9 +397,11 @@ class RestorationBoundaryTest(unittest.TestCase):
                     quality_gates.self_test_case("unsafe", planted, "owned fixture\n", ("testDebugUnitTest",), None)
             self.assertIs(unsafe, raised.exception)
             self.assertEqual("owned fixture\n", planted.read_text(encoding="utf-8"))
-            self.assertIn(str(planted.resolve()), unsafe.retained_fixtures)
-            self.assertIn("Confirm", unsafe.retained_fixtures[str(planted.resolve())])
-            self.assertTrue(any(str(planted.resolve()) in note for note in unsafe.__notes__))
+            self.assertIn("planted.kt", unsafe.retained_fixtures)
+            self.assertIn("Confirm", unsafe.retained_fixtures["planted.kt"])
+            self.assertTrue(any("planted.kt" in note for note in unsafe.__notes__))
+            self.assertNotIn(str(root), str(unsafe))
+            self.assertFalse(json.loads(str(unsafe).removeprefix("WINDOWS_PROCESS_RECOVERY "))["restoration_safe"])
 
     def test_safe_known_failure_still_restores_and_propagates(self) -> None:
         with tempfile.TemporaryDirectory(prefix="android-restore-") as temporary:
@@ -301,6 +412,72 @@ class RestorationBoundaryTest(unittest.TestCase):
                     quality_gates.self_test_case("safe failure", planted, "owned fixture\n", ("testDebugUnitTest",), None)
             self.assertIs(failure, raised.exception)
             self.assertFalse(planted.exists())
+
+    def test_recovery_mapping_failure_keeps_the_original_unsafe_error_and_retains_the_plant(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="android-restore-") as temporary:
+            root = Path(temporary)
+            planted = root / "planted.kt"
+            unsafe = windows.UnsafeProcessTreeError("synthetic unconfirmed tree", root)
+            with mock.patch.object(quality_gates, "run_gradle", side_effect=unsafe), \
+                    mock.patch.object(unsafe, "retain_fixture", side_effect=KeyboardInterrupt()):
+                with self.assertRaises(windows.UnsafeProcessTreeError) as raised:
+                    quality_gates.self_test_case("unsafe", planted, "owned fixture\n", ("testDebugUnitTest",), None)
+            self.assertIs(unsafe, raised.exception)
+            self.assertTrue(planted.exists())
+            self.assertEqual("fixture.recovery_mapping", unsafe.failures[-1]["stage"])
+
+    def test_nested_unsafe_cleanup_failure_keeps_its_identity_and_recovery_mapping(self) -> None:
+        root = Path("owned-context")
+        unsafe = windows.UnsafeProcessTreeError("synthetic unconfirmed tree", root, [{"pid": 123, "created": 456}])
+        unsafe.retain_fixture(root / "planted.kt")
+        grouped = BaseExceptionGroup("owned cleanup failure", [KeyboardInterrupt(), unsafe])
+        result = windows._cleanup_error(
+            None, grouped, "process_handles.close", root, [], None,
+            {"native_exits": False, "pipes_released": False},
+        )
+        self.assertIs(unsafe, result)
+        self.assertIn("planted.kt", result.retained_fixtures)
+        diagnostic = json.loads(str(result).removeprefix("WINDOWS_PROCESS_RECOVERY "))
+        self.assertEqual(123, diagnostic["processes"][0]["pid"])
+        self.assertEqual(456, diagnostic["processes"][0]["creation_filetime_100ns"])
+        self.assertEqual(2, len(diagnostic["failures"][-1]["children"]))
+
+    def test_secondary_cleanup_retains_identities_registered_after_unsafe_construction(self) -> None:
+        root = Path("owned-context")
+        first = {"pid": 123, "created": 456}
+        later = {"pid": 789, "created": 101112}
+        unsafe = windows.UnsafeProcessTreeError("synthetic incomplete confirmation", root, [first])
+        unsafe.retain_fixture(root / "planted.kt")
+        result = windows._cleanup_error(
+            unsafe, KeyboardInterrupt(), "launcher.finalize", root, [first, later], None,
+            {"native_exits": False, "pipes_released": False},
+        )
+        self.assertIs(unsafe, result)
+        self.assertEqual([first, later], result.processes)
+        diagnostic = json.loads(str(result).removeprefix("WINDOWS_PROCESS_RECOVERY "))
+        self.assertEqual({123, 789}, {process["pid"] for process in diagnostic["unconfirmed_identities"]})
+        self.assertIn("planted.kt", diagnostic["retained_fixtures"])
+
+    def test_allocation_cleanup_interrupt_does_not_replace_a_typed_unsafe_primary(self) -> None:
+        unsafe = windows.UnsafeProcessTreeError("synthetic allocation failure", Path("owned-context"))
+        with self.assertRaises(windows.UnsafeProcessTreeError) as raised:
+            windows._close_after_error(
+                unsafe, mock.Mock(side_effect=KeyboardInterrupt()), "process_pin.initialize.close",
+            )
+        self.assertIs(unsafe, raised.exception)
+        self.assertEqual("KeyboardInterrupt", unsafe.failures[-1]["type"])
+
+    def test_unpinned_pid_is_explicitly_unconfirmed_even_when_other_native_objects_exited(self) -> None:
+        unsafe = windows.UnsafeProcessTreeError(
+            "synthetic unopenable member", Path("owned-context"),
+            [{"pid": 123, "created": 456}, {"pid": 789, "unconfirmed_winerror": 5}],
+        )
+        unsafe.confirmation["native_exits"] = True
+        diagnostic = json.loads(str(unsafe).removeprefix("WINDOWS_PROCESS_RECOVERY "))
+        self.assertEqual("confirmed", diagnostic["processes"][0]["native_exit"])
+        self.assertEqual("unconfirmed", diagnostic["processes"][1]["native_exit"])
+        self.assertIsNone(diagnostic["processes"][1]["creation_filetime_100ns"])
+        self.assertEqual([diagnostic["processes"][1]], diagnostic["unconfirmed_identities"])
 
     def test_unsafe_failure_aborts_before_later_self_test_plants(self) -> None:
         with tempfile.TemporaryDirectory(prefix="android-restore-") as temporary:

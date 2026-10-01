@@ -46,17 +46,134 @@ class UnsafeProcessTreeError(WindowsProcessError):
     restoration_safe = False
 
     def __init__(self, detail: str, cwd: Path, processes: list[dict[str, int]] | None = None):
-        super().__init__(f"Windows command teardown unconfirmed: {detail}; recovery directory: {cwd}")
+        super().__init__("Windows command teardown unconfirmed")
         self.cwd = cwd
         self.processes = processes if processes is not None else []
         self.retained_fixtures: dict[str, str] = {}
         self.pending_launcher: subprocess.Popen | None = None
+        self.primary_error: BaseException | None = None
+        self.secondary_errors: list[tuple[str, BaseException]] = []
+        self.failures: list[dict[str, object]] = []
+        self.confirmation: dict[str, object] = {
+            "native_exits": False, "pipes_released": False, "membership_known": False,
+        }
+        self.pending_resources: list[object] = []
+
+    def record_failure(self, stage: str, error: BaseException) -> None:
+        self.secondary_errors.append((stage, error))
+        self.failures.append(_failure_fields(stage, error))
+
+    def diagnostic(self) -> dict[str, object]:
+        processes = [
+            {
+                "pid": process["pid"],
+                "created": process.get("created"),
+                "creation_filetime_100ns": process.get("created"),
+                "native_exit": (
+                    "confirmed" if self.confirmation["native_exits"] and process.get("created") is not None
+                    else "unconfirmed"
+                ),
+                **({"unconfirmed_winerror": process["unconfirmed_winerror"]}
+                   if "unconfirmed_winerror" in process else {}),
+            }
+            for process in self.processes
+        ]
+        return {
+            "code": "windows_process_teardown_unconfirmed",
+            "restoration_safe": False,
+            "budget_seconds": TEARDOWN_SECONDS,
+            "recovery_context": {
+                "working_directory": ".",
+                "action": "Confirm the recorded creation-owned process exits and reader-owned pipe release before restoration.",
+            },
+            "processes": processes,
+            "unconfirmed_identities": [process for process in processes if process["native_exit"] == "unconfirmed"],
+            "confirmation": self.confirmation,
+            "pending_launcher": self.pending_launcher is not None,
+            "pending_resource_types": [type(resource).__name__ for resource in self.pending_resources],
+            "retained_fixtures": self.retained_fixtures,
+            "failures": self.failures,
+        }
+
+    def __str__(self) -> str:
+        return "WINDOWS_PROCESS_RECOVERY " + json.dumps(self.diagnostic(), ensure_ascii=True, sort_keys=True)
 
     def retain_fixture(self, path: Path) -> None:
-        location = str(path.resolve())
+        try:
+            location = str(path.absolute().relative_to(self.cwd.absolute()))
+        except ValueError:
+            location = "outside_working_directory"
         recovery = "Confirm the recorded process objects and captured pipes are released before removing this fixture."
         self.retained_fixtures[location] = recovery
         self.add_note(f"Planted fixture retained at {location}. {recovery}")
+
+
+def _failure_fields(stage: str, error: BaseException) -> dict[str, object]:
+    return {
+        "stage": stage,
+        "type": type(error).__name__,
+        **{name: value for name in ("errno", "winerror") if isinstance(value := getattr(error, name, None), int)},
+        **({"children": [_failure_fields(stage, child) for child in error.exceptions]}
+           if isinstance(error, BaseExceptionGroup) else {}),
+    }
+
+
+def _cleanup_error(
+    outcome: BaseException | None,
+    error: BaseException,
+    stage: str,
+    cwd: Path,
+    processes: list[dict[str, int]],
+    process: subprocess.Popen | None,
+    confirmation: dict[str, object],
+) -> UnsafeProcessTreeError:
+    def nested_unsafe(value: BaseException) -> UnsafeProcessTreeError | None:
+        if isinstance(value, UnsafeProcessTreeError):
+            return value
+        if isinstance(value, BaseExceptionGroup):
+            for child in value.exceptions:
+                if found := nested_unsafe(child):
+                    return found
+        return None
+
+    secondary_unsafe = nested_unsafe(error)
+    unsafe = (
+        outcome if isinstance(outcome, UnsafeProcessTreeError)
+        else secondary_unsafe or UnsafeProcessTreeError(stage, cwd, processes)
+    )
+    if unsafe.primary_error is None and outcome is not unsafe:
+        unsafe.primary_error = outcome
+        if outcome is not None and outcome is not unsafe:
+            unsafe.record_failure("primary", outcome)
+    unsafe.record_failure(stage, error)
+    known = {(entry["pid"], entry.get("created")) for entry in unsafe.processes}
+    unsafe.processes.extend(entry for entry in processes if (entry["pid"], entry.get("created")) not in known)
+    if secondary_unsafe is not None and secondary_unsafe is not unsafe:
+        known = {(entry["pid"], entry.get("created")) for entry in unsafe.processes}
+        unsafe.processes.extend(
+            entry for entry in secondary_unsafe.processes if (entry["pid"], entry.get("created")) not in known
+        )
+        unsafe.retained_fixtures.update(secondary_unsafe.retained_fixtures)
+        unsafe.pending_resources.extend(secondary_unsafe.pending_resources)
+        if unsafe.pending_launcher is None:
+            unsafe.pending_launcher = secondary_unsafe.pending_launcher
+    unsafe.confirmation.update(confirmation)
+    if process is not None and not process._handle.closed:
+        unsafe.pending_launcher = process
+    return unsafe
+
+
+def _close_after_error(error: BaseException, close: Callable[[], None], stage: str) -> None:
+    try:
+        close()
+    except BaseException as secondary:
+        if isinstance(error, UnsafeProcessTreeError):
+            error.record_failure(stage, secondary)
+            raise error from None
+        if isinstance(secondary, UnsafeProcessTreeError):
+            secondary.record_failure("primary", error)
+            raise secondary from None
+        raise BaseExceptionGroup("Owned operation and resource release failed", [error, secondary]) from None
 
 
 class _BasicLimits(ctypes.Structure):
@@ -199,9 +316,12 @@ class WindowsJob:
                 api.kernel.SetInformationJobObject(self.handle, 9, ctypes.byref(limits), ctypes.sizeof(limits)),
                 "SetInformationJobObject",
             )
-        except OSError as error:
-            self.close()
-            raise ProcessOwnershipError(*error.args) from error
+        except BaseException as error:
+            failure = ProcessOwnershipError(*error.args) if isinstance(error, OSError) else error
+            _close_after_error(failure, self.close, "job.initialize.close")
+            if failure is error:
+                raise
+            raise failure from error
 
     def assign(self, process_handle: int) -> None:
         try:
@@ -244,15 +364,16 @@ class WindowsJob:
 
 class ReleaseEvent:
     def __init__(self) -> None:
-        self.handle: int | None = native().kernel.CreateEventW(None, False, False, None)
-        native().require(self.handle, "CreateEventW")
+        self.handle: int | None = None
         try:
+            self.handle = native().kernel.CreateEventW(None, False, False, None)
+            native().require(self.handle, "CreateEventW")
             native().require(
                 native().kernel.SetHandleInformation(self.handle, 1, 1),
                 "SetHandleInformation release event",
             )
-        except BaseException:
-            self.close()
+        except BaseException as error:
+            _close_after_error(error, self.close, "release_event.initialize.close")
             raise
 
     def release(self) -> None:
@@ -275,8 +396,8 @@ class ProcessPin:
         handle = native().duplicate(int(process._handle))
         try:
             return cls(process.pid, native().created(handle), handle)
-        except BaseException:
-            native().close(handle)
+        except BaseException as error:
+            _close_after_error(error, lambda: native().close(handle), "process_pin.initialize.close")
             raise
 
     @classmethod
@@ -288,8 +409,8 @@ class ProcessPin:
             if created is not None and birth != created:
                 raise WindowsProcessError("Process creation identity changed; refusing the reused PID")
             return cls(pid, birth, handle)
-        except BaseException:
-            native().close(handle)
+        except BaseException as error:
+            _close_after_error(error, lambda: native().close(handle), "process_pin.open.close")
             raise
 
     def signaled(self) -> bool:
@@ -313,22 +434,30 @@ class ProcessExits:
         return pin
 
     def add_members(self, job: WindowsJob) -> None:
+        failures: list[BaseException] = []
         for pid in set(job.process_ids()) | self.pending.keys():
-            if any(pin.pid == pid and not pin.signaled() for pin in self.pins.values()):
+            try:
+                pinned = any(pin.pid == pid and not pin.signaled() for pin in self.pins.values())
+            except BaseException as error:
+                failures.append(error)
+                # A failed wait must not prevent other owned identities from being pinned.
+                continue
+            if pinned:
                 self.pending.pop(pid, None)
                 continue
             try:
                 pin = ProcessPin.open(pid)
-            except OSError as error:
-                if error.winerror == ERROR_INVALID_PARAMETER:
+            except BaseException as error:
+                if isinstance(error, OSError) and getattr(error, "winerror", None) == ERROR_INVALID_PARAMETER:
                     self.pending.pop(pid, None)
                     continue  # Windows no longer has a process object for this member.
-                if error.winerror == 5:
+                if isinstance(error, OSError) and getattr(error, "winerror", None) == 5:
                     # A terminating member can refuse OpenProcess before its PID disappears.
                     # It remains unconfirmed until a pinned wait or ERROR_INVALID_PARAMETER.
                     self.pending[pid] = error.winerror
                     continue
-                raise
+                failures.append(error)
+                continue
             inside = wintypes.BOOL()
             try:
                 native().require(
@@ -345,9 +474,34 @@ class ProcessExits:
                     self.pins[key] = pin
                     pin = None
                 self.pending.pop(pid, None)
+            except BaseException as error:
+                if pin is not None:
+                    release = pin
+                    pin = None
+                    try:
+                        _close_after_error(error, release.close, "process_member.close")
+                    except BaseException as cleanup_error:
+                        error = cleanup_error
+                failures.append(error)
             finally:
                 if pin is not None:
-                    pin.close()
+                    try:
+                        pin.close()
+                    except BaseException as error:
+                        failures.append(error)
+        if failures:
+            for error in failures:
+                if isinstance(error, (UnsafeProcessTreeError, KeyboardInterrupt, SystemExit)):
+                    for secondary in failures:
+                        if secondary is not error:
+                            if isinstance(error, UnsafeProcessTreeError):
+                                error.record_failure("process_members", secondary)
+                            else:
+                                error.add_note(json.dumps(_failure_fields("process_members", secondary)))
+                    raise error from None
+            if len(failures) == 1:
+                raise failures[0]
+            raise BaseExceptionGroup("Owned process membership confirmation failed", failures)
 
     def all_signaled(self) -> bool:
         return bool(self.pins) and not self.pending and all(pin.signaled() for pin in self.pins.values())
@@ -358,9 +512,16 @@ class ProcessExits:
         ]
 
     def close(self) -> None:
-        for pin in self.pins.values():
-            pin.close()
-        self.pins.clear()
+        failures = []
+        for key, pin in list(self.pins.items()):
+            try:
+                pin.close()
+            except BaseException as error:
+                failures.append(error)
+            else:
+                del self.pins[key]
+        if failures:
+            raise BaseExceptionGroup("Creation-owned process handle release failed", failures)
         self.pending.clear()
 
 
@@ -443,38 +604,52 @@ def _finish(
     retain_output: bool,
     owned: bool,
     cwd: Path,
+    primary_error: BaseException | None = None,
 ) -> list[str]:
     deadline = time.monotonic() + TEARDOWN_SECONDS
-    problems: list[str] = []
+    problems: list[tuple[str, BaseException]] = []
     remaining: list[str] = []
     membership_known = not owned
     outcome: BaseException | None = None
-    recovery: list[dict[str, int]] = []
+    recovery = [root.metadata()] if root is not None else [{"pid": process.pid}]
+    confirmation: dict[str, object] = {
+        "native_exits": False, "pipes_released": False, "membership_known": membership_known,
+        "active_members": None,
+    }
+    job_close_attempted = False
     try:
+        recovery = exits.metadata()
         for reader in readers:
             reader.close_unstarted()
         if owned:
             try:
                 exits.add_members(job)
                 membership_known = True
-            except (OSError, WindowsProcessError) as error:
-                problems.append(f"membership unavailable: {error}")
+            except BaseException as error:
+                problems.append(("membership", error))
             try:
                 job.terminate()
-            except (OSError, KeyboardInterrupt) as error:
-                problems.append(f"job termination failed: {error.__class__.__name__}: {error}")
+            except BaseException as error:
+                problems.append(("job.terminate", error))
                 # Closing requests termination, but never substitutes for the waits below.
-                job.close()
+                job_close_attempted = True
+                try:
+                    job.close()
+                except BaseException as close_error:
+                    outcome = _cleanup_error(
+                        primary_error, close_error, "job.close", cwd, exits.metadata(), process, confirmation,
+                    )
+                    outcome.pending_resources.append(job)
         else:
             process.kill()
         while True:
             if owned and job.handle is not None:
                 try:
                     exits.add_members(job)
-                except (OSError, WindowsProcessError) as error:
+                except BaseException as error:
                     membership_known = False
-                    if not any(problem.startswith("membership unavailable") for problem in problems):
-                        problems.append(f"membership unavailable: {error}")
+                    if not any(stage == "membership" for stage, _ in problems):
+                        problems.append(("membership", error))
             try:
                 line = lines.get(timeout=max(0, min(POLL_SECONDS, deadline - time.monotonic())))
             except queue.Empty:
@@ -492,35 +667,55 @@ def _finish(
         native_exit = exits.all_signaled() if root is not None else native().wait(int(process._handle))
         safe = membership_known and native_exit and all(reader.released() for reader in readers)
         safe = safe and (active == 0 or job.handle is None)
-        if not safe:
-            problems.extend(
-                f"captured reader failed: {reader.error.__class__.__name__}: {reader.error}"
-                for reader in readers if reader.error is not None
-            )
-            detail = "; ".join(problems + [
-                f"budget={TEARDOWN_SECONDS}s", f"native exits={native_exit}",
-                f"pipes released={all(reader.released() for reader in readers)}",
-                f"active members={active}",
-            ])
-            outcome = UnsafeProcessTreeError(detail, cwd, exits.metadata())
-        elif problems:
-            outcome = WindowsProcessError("; ".join(problems) + "; pinned exits and pipe closure confirmed")
-    except (OSError, WindowsProcessError) as error:
-        outcome = UnsafeProcessTreeError(
-            f"native exit or pipe confirmation failed: {error}", cwd, exits.metadata(),
-        )
-        outcome.__cause__ = error
-    except (KeyboardInterrupt, SystemExit) as error:
-        outcome = UnsafeProcessTreeError(
-            f"interruption prevented shutdown confirmation within the same {TEARDOWN_SECONDS}s budget",
-            cwd, exits.metadata(),
-        )
-        outcome.__cause__ = error
-    finally:
         recovery = exits.metadata()
+        confirmation.update({
+            "native_exits": native_exit, "pipes_released": all(reader.released() for reader in readers),
+            "membership_known": membership_known, "active_members": active,
+        })
+        if not safe:
+            outcome = _cleanup_error(
+                outcome or primary_error, WindowsProcessError("Exit or pipe confirmation incomplete"),
+                "teardown.confirm", cwd, recovery, process, confirmation,
+            )
+        elif problems and outcome is None:
+            outcome = WindowsProcessError(
+                "job termination failed; pinned exits and pipe closure confirmed; "
+                + json.dumps([_failure_fields(stage, error) for stage, error in problems], sort_keys=True)
+            )
+        if isinstance(outcome, UnsafeProcessTreeError):
+            for stage, error in problems:
+                outcome.record_failure(stage, error)
+            for reader in readers:
+                if reader.error is not None:
+                    outcome.record_failure("reader", reader.error)
+    except BaseException as error:
+        outcome = _cleanup_error(
+            outcome or primary_error, error, "teardown.confirm", cwd, recovery, process, confirmation,
+        )
+    finally:
+        try:
+            recovery = exits.metadata()
+        except BaseException as error:
+            outcome = _cleanup_error(
+                outcome or primary_error, error, "process.metadata", cwd, recovery, process, confirmation,
+            )
         for reader in readers:
-            if not reader.released():
-                reader.stop_delivery.set()
+            stop_delivery = True
+            try:
+                stop_delivery = not reader.released()
+            except BaseException as error:
+                outcome = _cleanup_error(
+                    outcome or primary_error, error, "reader.finalize", cwd, recovery, process, confirmation,
+                )
+                outcome.pending_resources.append(reader)
+            if stop_delivery:
+                try:
+                    reader.stop_delivery.set()
+                except BaseException as error:
+                    outcome = _cleanup_error(
+                        outcome or primary_error, error, "reader.stop_delivery", cwd, recovery, process, confirmation,
+                    )
+                    outcome.pending_resources.append(reader)
         root_handle = root.handle if root is not None else int(process._handle)
         try:
             if native().wait(root_handle):
@@ -528,20 +723,33 @@ def _finish(
                 if process.stdin is not None:
                     process.stdin.close()
                 process._handle.Close()
-            elif isinstance(outcome, UnsafeProcessTreeError):
+            else:
+                confirmation["native_exits"] = False
+                outcome = _cleanup_error(
+                    outcome or primary_error, WindowsProcessError("Launcher exit is unconfirmed"),
+                    "launcher.finalize", cwd, recovery, process, confirmation,
+                )
+                outcome.confirmation["native_exits"] = False
                 outcome.pending_launcher = process
-        except OSError as error:
-            outcome = UnsafeProcessTreeError(f"launcher handle release failed: {error}", cwd, recovery)
+        except BaseException as error:
+            outcome = _cleanup_error(
+                outcome or primary_error, error, "launcher.finalize", cwd, recovery, process, confirmation,
+            )
             outcome.pending_launcher = process
-            outcome.__cause__ = error
-        for close in (job.close, exits.close):
+        for stage, resource in (("job.close", job), ("process_handles.close", exits)):
+            if stage == "job.close" and job_close_attempted:
+                continue
             try:
-                close()
-            except OSError as error:
-                outcome = UnsafeProcessTreeError(f"owned handle release failed: {error}", cwd, recovery)
-                outcome.__cause__ = error
+                resource.close()
+            except BaseException as error:
+                outcome = _cleanup_error(
+                    outcome or primary_error, error, stage, cwd, recovery, process, confirmation,
+                )
+                outcome.pending_resources.append(resource)
+        if isinstance(outcome, UnsafeProcessTreeError):
+            outcome.confirmation.update(confirmation)
     if outcome is not None:
-        raise outcome
+        raise outcome from None
     return remaining
 
 
@@ -566,6 +774,10 @@ def run_command(
     lines: queue.Queue[str] = queue.Queue(maxsize=128)
     owned = False
     root: ProcessPin | None = None
+    recovery: list[dict[str, int]] = []
+    confirmation: dict[str, object] = {
+        "native_exits": False, "pipes_released": False, "membership_known": False,
+    }
     try:
         release = ReleaseEvent()
         startup = subprocess.STARTUPINFO()
@@ -580,6 +792,7 @@ def run_command(
             assert process.stdout is not None and process.stderr is not None
             readers = [_Reader(process.stdout, lines), _Reader(process.stderr)]
             root = exits.add_root(process)
+            recovery = [root.metadata()]
             job.assign(int(process._handle))
             owned = True
             for reader in readers:
@@ -588,6 +801,7 @@ def run_command(
             release.close()
             while True:
                 exits.add_members(job)
+                recovery = exits.metadata()
                 try:
                     line = lines.get(timeout=POLL_SECONDS)
                 except queue.Empty:
@@ -596,11 +810,12 @@ def run_command(
                     consume(line)
                 if root.signaled():
                     break
-        except BaseException:
+        except BaseException as error:
             if process is not None:
-                _finish(job, process, root, exits, readers, lines, False, owned, cwd)
+                _finish(job, process, root, exits, readers, lines, False, owned, cwd, error)
             raise
         remaining = _finish(job, process, root, exits, readers, lines, True, owned, cwd)
+        confirmation.update({"native_exits": True, "pipes_released": True, "membership_known": True})
         # Output delivery may block in the caller; it cannot extend the shutdown budget.
         for line in remaining:
             consume(line)
@@ -619,8 +834,21 @@ def run_command(
             raise WindowsProcessError("Trusted Windows launcher did not report a command exit code")
         return status["exit_code"]
     finally:
-        if release is not None:
-            release.close()
-        if process is None:
-            exits.close()
-            job.close()
+        # An unsafe outcome can exist before it has been raised. Never replace it
+        # with an event/handle close failure or a second console interrupt.
+        outcome = sys.exception()
+        for stage, resource in (
+            ("release_event.close", release),
+            ("process_handles.close", exits if process is None else None),
+            ("job.close", job if process is None else None),
+        ):
+            if resource is None:
+                continue
+            try:
+                resource.close()
+            except BaseException as error:
+                proof = outcome.confirmation if isinstance(outcome, UnsafeProcessTreeError) else confirmation
+                outcome = _cleanup_error(outcome, error, stage, cwd, recovery, process, proof)
+                outcome.pending_resources.append(resource)
+        if isinstance(outcome, UnsafeProcessTreeError):
+            raise outcome from None

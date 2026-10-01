@@ -349,8 +349,11 @@ def self_test_case(name: str, path: Path, source: str, tasks: tuple[str, ...], e
         run = run_gradle(tasks)
     except UnsafeProcessTreeError as error:
         restoration_safe = False
-        error.retain_fixture(path)
-        raise
+        try:
+            error.retain_fixture(path)
+        except BaseException as mapping_error:
+            error.record_failure("fixture.recovery_mapping", mapping_error)
+        raise error from None
     finally:
         if restoration_safe:
             path.unlink(missing_ok=True)
@@ -522,4 +525,13 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    if __package__:
+        from .windows_processes import UnsafeProcessTreeError
+    else:
+        from windows_processes import UnsafeProcessTreeError
+
+    try:
+        sys.exit(main())
+    except UnsafeProcessTreeError as error:
+        print(str(error), file=sys.stderr, flush=True)
+        sys.exit(1)
