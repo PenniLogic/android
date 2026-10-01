@@ -1,0 +1,527 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/PenniLogic/docs/blob/main/product/client-state-taxonomy.schema.json",
+  "title": "PenniLogic client state taxonomy",
+  "description": "Shape of product/client-state-taxonomy.json: the shared vocabulary of client non-happy-path states (T-UX-01). Client tests assert the identifiers published in the data file, not display strings. The schema uses only draft-07 keywords that scripts/check_client_states.py validates without third-party packages.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "taxonomy_version", "stable_id", "source_issue", "document", "schema",
+    "clients", "scopes", "data_display_values", "placeholders", "placeholder_rule", "copy_rules",
+    "forbidden_terms", "accessibility_rules", "states", "precedence", "precedence_rule",
+    "distinctions", "contract_conditions", "excluded_conditions", "worked_examples", "signals",
+    "adoption"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "taxonomy_version": {
+      "type": "string",
+      "description": "Semantic version of the vocabulary. Clients pin it; 1.0.0 is the first published version. A wording change that alters no identifier and no canonical string bumps patch; an added identifier, canonical string or optional schema property bumps minor; a removed or renamed identifier, a removed canonical string or a new required schema property bumps major.",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "version_history": {
+      "type": "array",
+      "description": "Optional, ascending record of every published version. The validator checks that it starts at 1.0.0, ends at taxonomy_version and that each entry's bump matches its version arithmetic.",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/version_entry" }
+    },
+    "stable_id": { "const": "T-UX-01" },
+    "source_issue": { "const": "https://github.com/PenniLogic/docs/issues/1" },
+    "document": { "const": "product/client-state-taxonomy.md" },
+    "schema": { "const": "product/client-state-taxonomy.schema.json" },
+    "clients": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/client" }
+    },
+    "scopes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["surface", "region", "action"],
+      "properties": {
+        "surface": { "$ref": "#/definitions/text" },
+        "region": { "$ref": "#/definitions/text" },
+        "action": { "$ref": "#/definitions/text" }
+      }
+    },
+    "data_display_values": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["none", "hidden", "shown", "shown_marked"],
+      "properties": {
+        "none": { "$ref": "#/definitions/text" },
+        "hidden": { "$ref": "#/definitions/text" },
+        "shown": { "$ref": "#/definitions/text" },
+        "shown_marked": { "$ref": "#/definitions/text" }
+      }
+    },
+    "placeholders": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/placeholder" }
+    },
+    "placeholder_rule": { "$ref": "#/definitions/text" },
+    "copy_rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/copy_rule" }
+    },
+    "forbidden_terms": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "accessibility_rules": { "$ref": "#/definitions/text_list" },
+    "states": {
+      "type": "array",
+      "minItems": 8,
+      "items": { "$ref": "#/definitions/state" }
+    },
+    "precedence": {
+      "type": "array",
+      "minItems": 8,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/identifier" }
+    },
+    "precedence_rule": { "$ref": "#/definitions/text" },
+    "distinctions": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "$ref": "#/definitions/distinction" }
+    },
+    "contract_conditions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/contract_condition" }
+    },
+    "reason_rule": {
+      "$ref": "#/definitions/text",
+      "description": "Optional. What a reason identifier under a client-determined condition may and may not do."
+    },
+    "excluded_conditions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/excluded_condition" }
+    },
+    "content_renderings": {
+      "type": "array",
+      "description": "Optional. Ordinary content-state renderings that carry one canonical string naming no person (ADR-021 section 6.2). They are not taxonomy states and add no state identifier.",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/content_rendering" }
+    },
+    "content_rendering_rule": {
+      "$ref": "#/definitions/text",
+      "description": "Optional. The rule every content rendering obeys."
+    },
+    "worked_examples": {
+      "type": "array",
+      "description": "At least the three required high-risk examples; a future state or cause may add its own.",
+      "minItems": 3,
+      "items": { "$ref": "#/definitions/worked_example" }
+    },
+    "signals": { "$ref": "#/definitions/signals" },
+    "adoption": { "$ref": "#/definitions/adoption" }
+  },
+  "definitions": {
+    "identifier": {
+      "type": "string",
+      "description": "Machine-readable identifier: lowercase snake_case. Clients assert this value, never a display string.",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "human_name": {
+      "type": "string",
+      "description": "The hyphenated human name used in tickets, for example permission-denied.",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "signal_name": {
+      "type": "string",
+      "pattern": "^client_state\\.[a-z][a-z0-9_]*$"
+    },
+    "text": { "type": "string", "minLength": 1 },
+    "text_list": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/text" }
+    },
+    "client": { "enum": ["android", "web", "admin"] },
+    "scope": { "enum": ["surface", "region", "action"] },
+    "data_display": { "enum": ["none", "hidden", "shown", "shown_marked"] },
+    "placeholder": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "source"],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "description": { "$ref": "#/definitions/text" },
+        "source": {
+          "enum": ["surface_registration", "service_response", "client_platform", "client_cache", "component_copy"]
+        }
+      }
+    },
+    "copy_rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "rule"],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "rule": { "$ref": "#/definitions/text" }
+      }
+    },
+    "copy_variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["when", "headline", "body"],
+      "properties": {
+        "when": { "$ref": "#/definitions/text" },
+        "headline": { "$ref": "#/definitions/text" },
+        "body": { "$ref": "#/definitions/text" }
+      }
+    },
+    "copy": {
+      "type": "object",
+      "description": "Canonical copy. The same state renders the same strings on every client; only enumerated placeholders vary.",
+      "additionalProperties": false,
+      "required": ["headline", "body"],
+      "properties": {
+        "headline": { "$ref": "#/definitions/text" },
+        "body": { "$ref": "#/definitions/text" },
+        "variants": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/copy_variant" }
+        }
+      }
+    },
+    "recovery_action": {
+      "type": "object",
+      "description": "Exactly one recovery action per state. An object, not a list, so a second action cannot be expressed.",
+      "additionalProperties": false,
+      "required": ["id", "label", "behaviour"],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "label": { "$ref": "#/definitions/text" },
+        "behaviour": { "$ref": "#/definitions/text" },
+        "label_by_cause": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/text" }
+        },
+        "label_by_variant": {
+          "type": "object",
+          "description": "Optional label per copy variant when the variant's recovery action is a control with its own registered label; keys are variant keys of the state's copy.",
+          "additionalProperties": { "$ref": "#/definitions/text" }
+        }
+      }
+    },
+    "cause": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "contract_level", "client_determined"],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "description": { "$ref": "#/definitions/text" },
+        "contract_level": { "type": "boolean" },
+        "client_determined": { "type": "boolean" }
+      }
+    },
+    "guarantees": {
+      "type": "object",
+      "description": "Declared properties that the validator and tests assert for the states the acceptance criteria single out.",
+      "additionalProperties": false,
+      "properties": {
+        "rest_of_surface_usable": { "type": "boolean" },
+        "discloses_hidden_data": { "type": "boolean" },
+        "states_what_remains_available": { "type": "boolean" }
+      }
+    },
+    "state": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "name", "definition", "triggering_condition", "scopes", "data_display",
+        "auto_resolves", "composes_to_degraded", "required_content", "forbidden_content",
+        "recovery_action", "copy", "signal"
+      ],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "name": { "$ref": "#/definitions/human_name" },
+        "definition": { "$ref": "#/definitions/text" },
+        "triggering_condition": { "$ref": "#/definitions/text" },
+        "scopes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/scope" }
+        },
+        "data_display": { "$ref": "#/definitions/data_display" },
+        "auto_resolves": { "type": "boolean" },
+        "composes_to_degraded": {
+          "type": "boolean",
+          "description": "Whether a supplementary region in this state makes its host surface degraded. True only for self-resolving dependency failures (error, offline); a denial or an exhausted quota renders alone."
+        },
+        "required_content": { "$ref": "#/definitions/text_list" },
+        "forbidden_content": { "$ref": "#/definitions/text_list" },
+        "recovery_action": { "$ref": "#/definitions/recovery_action" },
+        "copy": { "$ref": "#/definitions/copy" },
+        "causes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/cause" }
+        },
+        "guarantees": { "$ref": "#/definitions/guarantees" },
+        "signal": { "$ref": "#/definitions/signal_name" }
+      }
+    },
+    "distinction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "states", "observable_difference", "data_shown", "resolution"],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "title": { "$ref": "#/definitions/text" },
+        "states": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/identifier" }
+        },
+        "observable_difference": { "$ref": "#/definitions/text" },
+        "data_shown": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/data_display" }
+        },
+        "resolution": { "$ref": "#/definitions/text" }
+      }
+    },
+    "contract_condition": {
+      "type": "object",
+      "description": "A conceptual condition and the single identifier it binds to. No error code, status code or wire field is expressible here; T-CON-12 owns those.",
+      "additionalProperties": false,
+      "required": ["id", "description", "binds_to", "contract_level", "binding_owner"],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "description": { "$ref": "#/definitions/text" },
+        "binds_to": { "$ref": "#/definitions/identifier" },
+        "cause": { "$ref": "#/definitions/identifier" },
+        "contract_level": { "type": "boolean" },
+        "binding_owner": { "$ref": "#/definitions/text" },
+        "reasons": {
+          "type": "array",
+          "description": "Optional reason identifiers published under a client-determined condition (contract_level false), byte-identical to the client's implementation. The validator rejects them under a contract-level condition.",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/condition_reason" }
+        }
+      }
+    },
+    "condition_reason": {
+      "type": "object",
+      "description": "Why a client-determined condition holds on one client. It selects no copy, adds no state, cause or action, and at most changes the destination of the condition's single recovery action.",
+      "additionalProperties": false,
+      "required": ["id", "client", "description", "clears_when", "published_by"],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "client": { "$ref": "#/definitions/client" },
+        "description": { "$ref": "#/definitions/text" },
+        "clears_when": { "$ref": "#/definitions/text" },
+        "limitation": { "$ref": "#/definitions/text" },
+        "privacy": { "$ref": "#/definitions/text" },
+        "recovery_destination": { "$ref": "#/definitions/text" },
+        "published_by": { "$ref": "#/definitions/text" }
+      }
+    },
+    "excluded_condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description", "owner"],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "description": { "$ref": "#/definitions/text" },
+        "owner": { "$ref": "#/definitions/text" }
+      }
+    },
+    "content_rendering": {
+      "type": "object",
+      "description": "An ordinary content-state rendering with one canonical string that names no person. rendered_in is the constant content: this is never a taxonomy state.",
+      "additionalProperties": false,
+      "required": ["id", "description", "rendered_in", "copy", "source", "owners"],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "description": { "$ref": "#/definitions/text" },
+        "rendered_in": { "const": "content" },
+        "copy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["label"],
+          "properties": {
+            "label": { "$ref": "#/definitions/text" }
+          }
+        },
+        "source": { "$ref": "#/definitions/text" },
+        "owners": { "$ref": "#/definitions/text_list" }
+      }
+    },
+    "version_entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "date", "bump", "change", "references"],
+      "properties": {
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "bump": { "enum": ["initial", "patch", "minor", "major"] },
+        "change": { "$ref": "#/definitions/text" },
+        "references": { "$ref": "#/definitions/text_list" }
+      }
+    },
+    "rendered_copy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["headline", "body", "action"],
+      "properties": {
+        "headline": { "$ref": "#/definitions/text" },
+        "body": { "$ref": "#/definitions/text" },
+        "action": { "$ref": "#/definitions/text" }
+      }
+    },
+    "signal_record": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signal", "attributes"],
+      "properties": {
+        "signal": { "$ref": "#/definitions/signal_name" },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/text" }
+        }
+      }
+    },
+    "worked_example": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "title", "surface", "clients", "state", "scenario", "shown", "must_not_show",
+        "copy_rendered", "transitions", "privacy_notes", "money_notes", "signal_recorded"
+      ],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "title": { "$ref": "#/definitions/text" },
+        "surface": { "$ref": "#/definitions/text" },
+        "clients": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/client" }
+        },
+        "state": { "$ref": "#/definitions/identifier" },
+        "cause": { "$ref": "#/definitions/identifier" },
+        "scenario": { "$ref": "#/definitions/text" },
+        "shown": { "$ref": "#/definitions/text_list" },
+        "must_not_show": { "$ref": "#/definitions/text_list" },
+        "copy_rendered": { "$ref": "#/definitions/rendered_copy" },
+        "transitions": { "$ref": "#/definitions/text_list" },
+        "privacy_notes": { "$ref": "#/definitions/text_list" },
+        "money_notes": { "$ref": "#/definitions/text_list" },
+        "signal_recorded": { "$ref": "#/definitions/signal_record" }
+      }
+    },
+    "signal_attribute": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "description": { "$ref": "#/definitions/text" },
+        "values": { "$ref": "#/definitions/text_list" }
+      }
+    },
+    "signals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prefix", "rule", "attributes", "privacy"],
+      "properties": {
+        "prefix": { "const": "client_state." },
+        "rule": { "$ref": "#/definitions/text" },
+        "attributes": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/signal_attribute" }
+        },
+        "privacy": { "$ref": "#/definitions/text_list" }
+      }
+    },
+    "coverage_assertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement", "owners", "proves"],
+      "properties": {
+        "id": { "$ref": "#/definitions/identifier" },
+        "statement": { "$ref": "#/definitions/text" },
+        "owners": { "$ref": "#/definitions/text_list" },
+        "proves": { "$ref": "#/definitions/text" }
+      }
+    },
+    "surface_registration": {
+      "type": "object",
+      "description": "The entry a client quality gate registers per surface so the coverage assertion can run. Illustrative here; no client registers surfaces yet.",
+      "additionalProperties": false,
+      "required": ["surface_id", "client", "applicable_states", "item", "attempt"],
+      "properties": {
+        "surface_id": { "$ref": "#/definitions/identifier" },
+        "client": { "$ref": "#/definitions/client" },
+        "applicable_states": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/identifier" }
+        },
+        "item": { "$ref": "#/definitions/text" },
+        "attempt": { "$ref": "#/definitions/text" },
+        "primary_action": { "$ref": "#/definitions/text" },
+        "what_appears_here": { "$ref": "#/definitions/text" },
+        "still_available": {
+          "$ref": "#/definitions/text",
+          "description": "The plural noun phrase the {still_available} placeholder renders; registered when quota_exceeded is applicable to the surface."
+        },
+        "submit_label": {
+          "$ref": "#/definitions/text",
+          "description": "The registered label of the surface's form submit control, which the validation variant of error keeps as its recovery action label."
+        },
+        "capabilities": { "$ref": "#/definitions/text_list" },
+        "freshness_window_seconds": { "type": "integer" }
+      }
+    },
+    "pending_extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "scope"],
+      "properties": {
+        "owner": { "$ref": "#/definitions/text" },
+        "scope": { "$ref": "#/definitions/text" }
+      }
+    },
+    "adoption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "existing_client_coverage", "coverage_assertions", "illustrative_surface_registration",
+        "extension_procedure", "pending_extensions"
+      ],
+      "properties": {
+        "existing_client_coverage": { "$ref": "#/definitions/text" },
+        "coverage_assertions": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "$ref": "#/definitions/coverage_assertion" }
+        },
+        "illustrative_surface_registration": { "$ref": "#/definitions/surface_registration" },
+        "extension_procedure": { "$ref": "#/definitions/text_list" },
+        "pending_extensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/pending_extension" }
+        }
+      }
+    }
+  }
+}
