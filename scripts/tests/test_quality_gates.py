@@ -215,6 +215,8 @@ class QualityGatesTest(unittest.TestCase):
     def test_self_test_fails_when_a_gate_passes_on_a_planted_defect(self) -> None:
         # The unit-test gate "passes" (exit 0) despite the planted failure: the self-test must fail.
         def fake_run(tasks, extra=(), force_unit_tests=True):
+            if tasks == ("formatterInputScopeRegression",):
+                return gradle_run(0, "native formatter scope passed\n")
             if tasks == ("testDebugUnitTest",) and force_unit_tests:
                 self.write(
                     "build/test-results/testDebugUnitTest/TEST-com.pennilogic.android.PlantedFailingTest.xml",
@@ -231,15 +233,16 @@ class QualityGatesTest(unittest.TestCase):
         self.assertFalse(records[-1]["passed"])
         self.assertFalse(records[-1]["cases"][0]["failed_as_expected"])
 
-    def scripted_gradle(self, *, up_to_date_plant: str = "UP-TO-DATE", cache_rounds: tuple[str, ...] = ("executed", "FROM-CACHE"), recovery_console: str = "> Task :app:testDebugUnitTest\nBUILD SUCCESSFUL\n"):
-        """A run_gradle stand-in that plays the self-test's sequence: planted failure, spotless, lint,
-        recovery, the up-to-date plant, then the cached plant round by round."""
+    def scripted_gradle(self, *, up_to_date_plant: str = "UP-TO-DATE", cache_rounds: tuple[str, ...] = ("executed", "FROM-CACHE"), recovery_console: str = "> Task :app:testDebugUnitTest\nBUILD SUCCESSFUL\n", formatter_scope_exit: int = 0):
+        """Play the native scope probe, planted failure, spotless, lint, recovery and reuse plants."""
         calls: list[tuple] = []
         cache_calls = iter(cache_rounds)
         results_dir = self.app / "build/test-results/testDebugUnitTest"
 
         def fake_run(tasks, extra=(), force_unit_tests=True):
             calls.append((tasks, tuple(extra), force_unit_tests))
+            if tasks == ("formatterInputScopeRegression",):
+                return gradle_run(formatter_scope_exit, "native formatter scope probe\n")
             if tasks == ("testDebugUnitTest",) and force_unit_tests:
                 self.write(
                     "build/test-results/testDebugUnitTest/TEST-com.pennilogic.android.PlantedFailingTest.xml",
@@ -285,6 +288,8 @@ class QualityGatesTest(unittest.TestCase):
         records = json.loads(quality_gates.METRICS_FILE.read_text(encoding="utf-8"))
         report = records[-1]
         self.assertTrue(report["passed"])
+        self.assertEqual({"exit_code": 0, "duration_seconds": 1.0}, report["formatter_input_scope"])
+        self.assertEqual(10.0, report["duration_seconds"])
         cases = report["cases"]
         self.assertEqual(
             [
@@ -308,6 +313,15 @@ class QualityGatesTest(unittest.TestCase):
         self.assertEqual(["executed", "FROM-CACHE"], [r["outcome"] for r in cases[4]["rounds"]])
         self.assertEqual(
             [
+                (
+                    ("formatterInputScopeRegression",),
+                    (
+                        "--init-script",
+                        str(self.root / "scripts" / "tests" / "fixtures" / "formatter_input_scope.init.gradle"),
+                        "--no-configuration-cache",
+                    ),
+                    True,
+                ),
                 (("testDebugUnitTest",), (), True),
                 (("spotlessCheck",), (), True),
                 (("lintDebug",), (), True),
@@ -327,9 +341,22 @@ class QualityGatesTest(unittest.TestCase):
         with mock.patch.object(quality_gates, "run_gradle", side_effect=fake_run), mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(0, quality_gates.self_test())
 
-        self.assertEqual(6, len(calls))
+        self.assertEqual(7, len(calls))
         cached = json.loads(quality_gates.METRICS_FILE.read_text(encoding="utf-8"))[-1]["cases"][4]
         self.assertEqual(["FROM-CACHE"], [r["outcome"] for r in cached["rounds"]])
+
+    def test_self_test_refuses_a_failed_formatter_scope_probe_even_when_all_five_plants_pass(self) -> None:
+        fake_run, _ = self.scripted_gradle(formatter_scope_exit=1)
+
+        with mock.patch.object(quality_gates, "run_gradle", side_effect=fake_run), mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(1, quality_gates.self_test())
+
+        report = json.loads(quality_gates.METRICS_FILE.read_text(encoding="utf-8"))[-1]
+        self.assertEqual(1, report["formatter_input_scope"]["exit_code"])
+        self.assertFalse(report["passed"])
+        self.assertEqual(5, len(report["cases"]))
+        self.assertTrue(all(case["failed_as_expected"] for case in report["cases"]))
+        self.assertEqual(0, report["recovery"]["exit_code"])
 
     def test_self_test_fails_when_the_gate_accepts_an_up_to_date_run(self) -> None:
         # The plant was not refused: Gradle said UP-TO-DATE but the fake gate saw an execution. Simulated by

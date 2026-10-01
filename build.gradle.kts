@@ -12,7 +12,6 @@ plugins {
 spotless {
     kotlin {
         target("app/src/**/*.kt")
-        targetExclude("**/build/**")
         ktlint(libs.versions.ktlint.get())
         trimTrailingWhitespace()
         endWithNewline()

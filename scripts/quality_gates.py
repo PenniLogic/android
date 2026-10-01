@@ -7,7 +7,7 @@ Usage (from a clean clone, JDK 21 and Android SDK 36 present, nothing else confi
     python scripts/quality_gates.py lint        # Android lint (warnings are errors) + Spotless
     python scripts/quality_gates.py coverage    # unit tests with the JaCoCo coverage report
     python scripts/quality_gates.py all         # build, test, lint, coverage in that order
-    python scripts/quality_gates.py self-test   # prove that planted defects fail each gate
+    python scripts/quality_gates.py self-test   # prove formatter scope and planted-defect refusals
 
 Each gate appends a JSON record to build/quality-metrics.json (build duration, unit test count,
 lint violation count) and, when GITHUB_STEP_SUMMARY is set, a Markdown table to that file.
@@ -414,12 +414,22 @@ def reused_results_case(name: str, expected_outcome: str, clean_outputs: bool, e
     }
 
 
+def run_formatter_input_scope() -> GradleRun:
+    fixture = ROOT / "scripts" / "tests" / "fixtures" / "formatter_input_scope.init.gradle"
+    return run_gradle(
+        ("formatterInputScopeRegression",),
+        ("--init-script", str(fixture), "--no-configuration-cache"),
+    )
+
+
 def self_test() -> int:
-    """Assert that each gate fails on a planted defect and passes again once it is removed, and that
-    the unit-test gate refuses results it did not produce."""
+    """Assert source-only formatter inputs, planted-defect failures, clean recovery and refusal of
+    unit-test results this run did not produce."""
     if any(path.exists() for path in (FAILING_TEST, FORMAT_VIOLATION, LINT_VIOLATION)):
         print("self-test: planted-defect paths already exist; remove them first", file=sys.stderr)
         return 2
+    # Nothing may intervene between the clean recovery and the two planted reuse invocations.
+    formatter_run = run_formatter_input_scope()
     planted_report = APP / "build/test-results/testDebugUnitTest/TEST-com.pennilogic.android.PlantedFailingTest.xml"
     results = [
         self_test_case(
@@ -471,13 +481,22 @@ def self_test() -> int:
     results.append(
         reused_results_case("cached unit-test results are refused", "FROM-CACHE", clean_outputs=True, extra=("--build-cache",)),
     )
-    report: dict[str, object] = {"gate": "self-test", "cases": results, "recovery": recovery}
-    passed = all(case["failed_as_expected"] for case in results) and recovery["exit_code"] == 0
+    report: dict[str, object] = {
+        "gate": "self-test",
+        "formatter_input_scope": {
+            "exit_code": formatter_run.exit_code,
+            "duration_seconds": formatter_run.duration_seconds,
+        },
+        "cases": results,
+        "recovery": recovery,
+    }
+    passed = formatter_run.exit_code == 0 and all(case["failed_as_expected"] for case in results)
+    passed = passed and recovery["exit_code"] == 0
     passed = passed and planted_test_result.get("planted_test_counted_not_skipped", False)
     report["passed"] = passed
     report["exit_code"] = 0 if passed else 1
     report["duration_seconds"] = round(
-        sum(c["duration_seconds"] for c in results) + recovery_run.duration_seconds,
+        formatter_run.duration_seconds + sum(c["duration_seconds"] for c in results) + recovery_run.duration_seconds,
         3,
     )
     publish(report)
