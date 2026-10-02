@@ -59,7 +59,7 @@
         },
         {
           "name": "Run checks",
-          "run": "python scripts/check_repository.py\npython scripts/quality_gates.py build\npython scripts/quality_gates.py test\npython scripts/quality_gates.py lint\npython scripts/quality_gates.py coverage\npython scripts/quality_gates.py self-test\npython -m unittest discover -s scripts/tests -p \"test_*.py\""
+          "run": "python scripts/check_repository.py\npython scripts/quality_gates.py ci\npython scripts/quality_gates.py self-test\npython -m unittest discover -s scripts/tests -p \"test_*.py\""
         }
       ]
     }

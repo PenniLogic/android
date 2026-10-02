@@ -32,10 +32,7 @@ cannot approve its own PR. Never invent another GitHub reviewer.
 ```text
 python scripts/setup.py
 python scripts/check_repository.py
-python scripts/quality_gates.py build
-python scripts/quality_gates.py test
-python scripts/quality_gates.py lint
-python scripts/quality_gates.py coverage
+python scripts/quality_gates.py ci
 python scripts/quality_gates.py self-test
 python -m unittest discover -s scripts/tests -p "test_*.py"
 ```
