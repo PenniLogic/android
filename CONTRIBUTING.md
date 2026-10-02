@@ -8,10 +8,7 @@ Install Python 3.14, Git, JDK 21, and the Android SDK packages `platforms;androi
 ```text
 python scripts/setup.py
 python scripts/check_repository.py
-python scripts/quality_gates.py build
-python scripts/quality_gates.py test
-python scripts/quality_gates.py lint
-python scripts/quality_gates.py coverage
+python scripts/quality_gates.py ci
 python scripts/quality_gates.py self-test
 python -m unittest discover -s scripts/tests -p "test_*.py"
 ```
