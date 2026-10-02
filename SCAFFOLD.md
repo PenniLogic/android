@@ -57,6 +57,7 @@ Run from the repository root of a clean clone. No other setup step is required.
 | Instrumented tests on the connected API 36 emulator (local evidence; CI has no emulator) | `./gradlew connectedDebugAndroidTest` |
 | Sideloaded-QA prerequisite check on the connected device (read-only) | `python scripts/qa_sideload_prerequisites.py` |
 | Gates with pipeline metrics | `python scripts/quality_gates.py all` |
+| CI-only grouped build, tests, lint and coverage with fresh single-invocation evidence | `python scripts/quality_gates.py ci` |
 | Gate self-test on planted defects | `python scripts/quality_gates.py self-test` |
 | Script unit tests | `python -m unittest discover -s scripts/tests -p "test_*.py"` |
 | Native formatter input-scope regression only | `./gradlew formatterInputScopeRegression --init-script scripts/tests/fixtures/formatter_input_scope.init.gradle --no-configuration-cache --console=plain --no-daemon --stacktrace` |
@@ -163,6 +164,68 @@ two plants are the only unit-test invocations the script makes without `--rerun`
 name no unit-test task, so the option does not apply to them). The price of the design is
 that the debug unit tests execute twice in `all` (once in `test`, once in `coverage`) and once more in
 the self-test recovery; that is the evidence, not overhead to optimise away.
+
+### Explicit grouped CI command
+
+`python scripts/quality_gates.py ci` is an intentional CI-only command contract, not a change to
+`all` or any standalone gate. It requests both APKs, both complete unit-test variants, both lint
+variants, Spotless and the debug JaCoCo report in one native Gradle invocation. Both unit-test
+tasks still carry `--rerun`; test and coverage share that same newly executed debug task, never a
+previous invocation's results. Report-producing tasks also carry `--rerun`. Compilation and other
+native work remain cacheable, with the same `--no-daemon` and process-ownership boundary.
+
+Before starting Gradle, Python checks physical source/input trees and their ancestors, including
+`app/src`, build configuration and the wrapper/catalogue inputs, plus all six evidence paths.
+It does not invalidate any evidence. Source or output aliases, reparse ancestors/descendants and
+unexpected path types are refused before native launch, preserving every existing evidence file.
+
+Inside the same native graph, the init script first verifies the actual root/application/build
+locations, every consumed task-declared output and the debug JaCoCo destination. It also binds the
+configured Android source-set directories and manifests to the admitted physical `app/src` scope.
+All declaration, source and output checks finish before the first invalidation. A changed early
+or late declaration, changed JaCoCo destination or unsafe configured source root leaves all six
+evidence paths untouched. No second configuration graph or global cleaning is used.
+
+Only then does native configuration invalidate the two JUnit result directories, both lint XML
+files, debug JaCoCo execution data and the debug coverage report directory, before tasks/producers.
+A captured `CI_NATIVE_PREFLIGHT` record binds the configured sources and six outputs to the current
+invocation and its native producers. Previous metrics, sources, test fixtures and caches are not
+removed. No freshness decision uses file timestamps; these ownership checks are not a sandbox
+for hostile Gradle code.
+
+The returned native console must contain the exact application task paths, both executed test
+tasks and executed report producers. Reused tests/reports, unknown outcomes, missing tasks or
+reports, wrong-module task headers, malformed or empty evidence and native failures make the
+command fail. Its JUnit, lint and JaCoCo evidence must all be newly produced by that one invocation.
+JUnit totals must agree with the individual test-case elements, including skips and failures.
+An owned temporary init script establishes a fresh per-invocation identity using the existing
+debug JaCoCo agent's session-ID setting. Native producer actions observe the generated test,
+execution-data, lint and coverage files, emitting their SHA-256 fingerprints and that identity into
+this single captured console. Every consumed file must still match its producer's observation.
+The JaCoCo XML and execution-data session must also match this invocation, so replaying a prior
+matching pair cannot pass. This never uses file timestamps or a clock-based freshness threshold.
+The script verifies the native task-declared output contract and keeps configuration/build caching
+enabled; compilation stays cacheable and both unit-test tasks remain forced. Its temporary file
+is removed only after safe native return, or retained with the typed unsafe-process error.
+The pinned leading-session JaCoCo format is checked explicitly; unsupported formats, encodings or
+session layouts fail closed rather than yielding trusted counts.
+The command records actual coverage counters; it does not introduce a coverage floor or claim
+one was enforced where the scaffold only generates a report.
+
+Metrics contain one `gate: ci` record with `gates: ["build", "test", "lint", "coverage"]`, one
+`duration_seconds` wall-clock figure including evidence preparation/validation, the native
+`native_duration_seconds`, fresh `invocation_id`, verified native `preflight`, exact
+`native_task_outcomes`, both variants' `unit_tests`, `lint_issues` and `coverage`. Refusals retain
+`gradle_exit_code` and name the refused evidence. There are no invented component durations or
+four copies of a shared duration to add together.
+
+The existing `all`/standalone commands still execute debug tests separately for test and coverage.
+The entire native formatter probe and five-case `self-test`, including its executed clean recovery
+and two deliberate reuse refusals, remain separate and unchanged. CI adoption must be serialized
+through the canonical Infra generator; adding this command alone does not change the generated
+workflow or establish hosted performance acceptance. Measure the complete native PR job and
+workflow, not a warm local control or a sum of mock metrics, against the unchanged under-600-second
+criterion.
 
 ## Build configuration keys
 
