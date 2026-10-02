@@ -1,0 +1,34 @@
+{
+  "metadata_version": 1,
+  "repository": "PenniLogic/docs",
+  "repository_id": 1394134442,
+  "organization_id": 335295566,
+  "source_issue": "https://github.com/PenniLogic/docs/issues/1",
+  "source_commit": "a700e639585c61a4610e7b99dbd02b2dab28bdcc",
+  "source_tree": "3879d3893a3f289bd6b0d4474f09dbebf1fef195",
+  "taxonomy_version": "1.1.0",
+  "provider_schema_version": 1,
+  "artifacts": {
+    "data": {
+      "source_path": "product/client-state-taxonomy.json",
+      "vendored_file": "client-state-taxonomy.json",
+      "git_blob": "47c3b234fb3921cdd5057a77d95610d72da0805a",
+      "byte_count": 78795,
+      "sha256": "040d2f0c27332ce3f6794a90139e714b3c50afb5b7340aa596d47b8866f2b3fb"
+    },
+    "schema": {
+      "source_path": "product/client-state-taxonomy.schema.json",
+      "vendored_file": "client-state-taxonomy.schema.json",
+      "git_blob": "703c67f535852d91cf06f6b585b083dbdb1901c9",
+      "byte_count": 21422,
+      "sha256": "6bceee452e135835baa7733886d3aceae6322df5a6aefc0c9ea9f9d35ddebfc1"
+    },
+    "document": {
+      "source_path": "product/client-state-taxonomy.md",
+      "vendored_file": null,
+      "git_blob": "2a3b35572bfda0040e313e912f6ff6224c03469d",
+      "byte_count": 74054,
+      "sha256": "7d8fc9d415c18c90c715726c09f93dc7774527dd17ea42a5a4b0a3587f172717"
+    }
+  }
+}

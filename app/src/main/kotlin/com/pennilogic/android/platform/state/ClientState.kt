@@ -5,9 +5,10 @@ package com.pennilogic.android.platform.state
  * `product/client-state-taxonomy.json`). Android asserts these identifiers, never display strings,
  * and its state enumeration is exactly the published set (`taxonomy_first`). A new state or cause is
  * added to the taxonomy first and only then here.
+ * Accepted immutable source: `docs/platform/client-state-taxonomy/source.json`.
  */
 object ClientStateTaxonomy {
-    const val VERSION: String = "1.0.0"
+    const val VERSION: String = "1.1.0"
     const val SIGNAL_PREFIX: String = "client_state."
     const val CLIENT: String = "android"
 }

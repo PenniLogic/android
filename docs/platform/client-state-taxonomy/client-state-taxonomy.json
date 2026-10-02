@@ -1,0 +1,1053 @@
+{
+  "schema_version": 1,
+  "taxonomy_version": "1.1.0",
+  "version_history": [
+    {
+      "version": "1.0.0",
+      "date": "2026-09-29",
+      "bump": "initial",
+      "change": "First published version, merged to main as 6eb4da65 via PenniLogic/docs#138. The schema change made before that merge (the required composes_to_degraded property) was not a versioning event: nothing had been published or pinned. Every change after 6eb4da65 bumps this version.",
+      "references": ["PenniLogic/docs#1 (T-UX-01)", "PenniLogic/docs#138"]
+    },
+    {
+      "version": "1.1.0",
+      "date": "2026-09-30",
+      "bump": "minor",
+      "change": "Additions only; no identifier or canonical string removed or renamed. Reviewer follow-ups from PenniLogic/docs#138: label_by_variant on error (the validation variant keeps the form's registered submit label through the new submit_label placeholder), optional still_available and submit_label registration properties, the stale marker associated with the group of figures it qualifies, no notification for an item the viewer can no longer access, the rate_limited condition softened to should, and the elapsed-lease drop from the sharing overview stated as local. Seven Android capture-health reason identifiers published under capture_paused_by_platform and capture_blocked_by_setting, byte-identical to the android source of record (PenniLogic/android#57). Own-key usage reconciled with ADR-023: tokens never produce quota_exceeded, the request allowance still can. Five content renderings with canonical copy naming no person for ADR-021 erasure residue (former member, redacted description and note, former viewer, partial total).",
+      "references": ["PenniLogic/docs#139", "PenniLogic/android#57", "ADR-021 (PenniLogic/docs#41)", "ADR-023 (PenniLogic/docs#47)"]
+    }
+  ],
+  "stable_id": "T-UX-01",
+  "source_issue": "https://github.com/PenniLogic/docs/issues/1",
+  "document": "product/client-state-taxonomy.md",
+  "schema": "product/client-state-taxonomy.schema.json",
+  "clients": ["android", "web", "admin"],
+  "scopes": {
+    "surface": "A whole screen, page or console view. At most one surface-scope state is rendered at a time.",
+    "region": "A part of a surface with its own data or capability (a card, a panel, a list section). Region states coexist with the surface's content.",
+    "action": "The outcome of one user-initiated operation (save, settle, ask). Action states are shown where the action was taken and never replace the surface's content."
+  },
+  "data_display_values": {
+    "none": "There is no data for the state to show; nothing is rendered in place of it except the state itself.",
+    "hidden": "Data may exist locally or remotely but must not be shown while the state applies.",
+    "shown": "The data the state concerns stays visible and usable, unchanged.",
+    "shown_marked": "The data stays visible and one text marker per region, programmatically associated with the group of figures it qualifies (a region-level accessible description, or appended to the region's own accessible name, never replacing it, and never a per-figure association), states the condition; at most a short per-figure flag is added, and the marker is announced once per region."
+  },
+  "placeholders": [
+    {
+      "id": "item",
+      "description": "The surface's plural noun for its content in product terms, for example 'transactions' or 'shared totals'.",
+      "source": "surface_registration"
+    },
+    {
+      "id": "attempt",
+      "description": "What was attempted, as a plain verb phrase, for example 'load your transactions' or 'save this expense'.",
+      "source": "surface_registration"
+    },
+    {
+      "id": "capability",
+      "description": "The product name of an unavailable capability, for example 'AI explanations', 'Automatic capture' or 'Currency rates'. Never a vendor, provider or internal component name. For the Android automatic-capture surface the registered value is 'Automatic capture' (confirmed for T-AND-07, PenniLogic/android#57).",
+      "source": "surface_registration"
+    },
+    {
+      "id": "permission",
+      "description": "The user-facing name of a device permission or restricted setting as the client's platform copy names it, for example 'SMS access', 'notification access' or 'camera access'. Never the platform's identifier string, which belongs only on the signal attribute permission. For the Android capture surface the permissions and restricted settings are those the T-AND-07 restricted-settings matrix marks as used by capture (confirmed for PenniLogic/android#57), each rendered by its user-facing name.",
+      "source": "client_platform"
+    },
+    {
+      "id": "last_updated",
+      "description": "The time of the last successful refresh, relative or absolute, produced by the client's locale formatter.",
+      "source": "client_cache"
+    },
+    {
+      "id": "limit",
+      "description": "The allowance the service stated, as a count and its window, for example '5 AI questions'. Never a monetary amount.",
+      "source": "service_response"
+    },
+    {
+      "id": "resets_at",
+      "description": "When the allowance resets, as stated by the service and formatted by the client's locale formatter. The sentence that contains it is omitted when the service stated no reset time, for example for an allowance that never resets or one that is zero (ADR-023).",
+      "source": "service_response"
+    },
+    {
+      "id": "still_available",
+      "description": "What remains usable, stated positively as a plural noun phrase so the canonical sentence reads correctly, for example 'Saved answers and everything outside AI' or 'Manual entry and your saved reports'. A registration that supplies a singular phrase fails the client gate's copy check.",
+      "source": "surface_registration"
+    },
+    {
+      "id": "primary_action",
+      "description": "The label of the surface's single primary creating action, for example 'Add a transaction'.",
+      "source": "surface_registration"
+    },
+    {
+      "id": "what_appears_here",
+      "description": "One or two sentences saying what will appear on the surface and how it gets there (recorded, captured, imported or shared).",
+      "source": "surface_registration"
+    },
+    {
+      "id": "field_guidance",
+      "description": "The component's field-level guidance stating what is needed for a rejected field. Component copy is owned by the design system and follows these copy rules.",
+      "source": "component_copy"
+    },
+    {
+      "id": "submit_label",
+      "description": "The registered label of the form's submit control, for example 'Save' or 'Add a transaction'. Used only as the recovery action label of the validation variant of error: the control keeps its registered label while a validation error is shown and is not relabelled with the canonical 'Try again', so the coverage assertion checks the registered label for that variant.",
+      "source": "surface_registration"
+    }
+  ],
+  "placeholder_rule": "A placeholder value is never a monetary amount, balance, count of hidden items, internal identifier, another person's name, provider or vendor name, or raw message content. Values come only from the source named for the placeholder.",
+  "copy_rules": [
+    {
+      "id": "no_blame",
+      "rule": "Copy never attributes fault to the user. It does not say the user failed, denied, forgot or entered something wrong; it describes the condition and what is needed."
+    },
+    {
+      "id": "no_invented_cause",
+      "rule": "Copy states only what the client knows. A cause is named only for offline (the platform reported no connectivity) and for conditions the service stated in a user-facing form. Error and degraded copy never guess a cause such as a service being down, a network problem or high demand."
+    },
+    {
+      "id": "no_internal_detail",
+      "rule": "Copy contains no internal identifiers, stack detail, status codes, exception names, provider or vendor names, or raw service messages. A correlation identifier travels with a support report, never in the copy."
+    },
+    {
+      "id": "no_hidden_data_disclosure",
+      "rule": "Copy never reveals whether data exists behind a denial, how much of it there is, or another person's existence, decision or account state."
+    },
+    {
+      "id": "same_wording",
+      "rule": "The same state uses the same canonical copy on Android, web and admin, differing only in the enumerated placeholders. Clients do not paraphrase. Localisation (owned by E30) translates the canonical strings in this file, not per-client variants."
+    },
+    {
+      "id": "one_action",
+      "rule": "Exactly one recovery action is offered per state and the body contains no second call to action. Global chrome such as navigation and help is not a recovery action."
+    },
+    {
+      "id": "positive_framing",
+      "rule": "Permission-denied, quota-exceeded and degraded copy states what still works, not only what is blocked."
+    },
+    {
+      "id": "plain_language",
+      "rule": "Short sentences in sentence case, no exclamation marks, no jargon, and a headline of at most sixty characters before placeholders are filled."
+    },
+    {
+      "id": "no_money_in_state_copy",
+      "rule": "State copy carries no monetary amount, price or balance. Figures belong to the surface's content, which the state qualifies but never restates."
+    },
+    {
+      "id": "calm_tone",
+      "rule": "No humour, apology theatre or promotional language. The copy is calm and evidence-led, matching PRODUCT.md."
+    }
+  ],
+  "forbidden_terms": [
+    "oops", "sorry", "invalid", "illegal", "wrong", "you failed", "you denied", "you must",
+    "error code", "exception", "stack", "null", "undefined", "server", "backend", "api",
+    "database", "timeout", "because", "unexpected", "!"
+  ],
+  "accessibility_rules": [
+    "Entering a state is announced once to assistive technology: politely for loading, offline, stale and degraded; by moving focus to the headline, or an assertive announcement, for error, permission-denied and quota-exceeded. A validation rejection moves focus to the rejected field instead of the headline.",
+    "A region-scope permission-denied or quota-exceeded state that is still present on a later launch or return to the surface is not re-announced and does not take focus again; it is exposed in reading order like any other region.",
+    "Every state and marker is conveyed by text, never by colour or icon alone; the visual treatment (owned by T-DSY-01) is additional.",
+    "The recovery action is a focusable control reachable by keyboard and switch access, with the headline as its accessible context.",
+    "Non-blocking notices (degraded, stale, the offline marker) never move focus away from the user's task.",
+    "A stale region has one marker, programmatically associated with the group of figures it qualifies (a region-level accessible description, or appended to the region's own accessible name, never replacing it, and never a per-figure association) and announced once; a marker is never repeated after every figure.",
+    "Controls disabled by a state (quota-exceeded) stay visible and expose both the disabled state and its reason to assistive technology.",
+    "Canonical copy remains readable at two hundred percent text scale; headlines wrap rather than clip and placeholders never force a single line.",
+    "Loading indicators respect the reduced-motion preference; no state depends on animation to be understood.",
+    "The conformance target is WCAG 2.2 AA on web and admin; Android follows current Material accessibility guidance and the applicable WCAG outcomes, as PRODUCT.md states."
+  ],
+  "states": [
+    {
+      "id": "empty",
+      "name": "empty",
+      "definition": "The request for this surface or region completed successfully and there is nothing to show yet.",
+      "triggering_condition": "A read completed with zero items, or a locally backed surface has no records, and no filter is narrowing the result. A filtered result with zero matches is a content state with a no-results message, not empty.",
+      "scopes": ["surface", "region"],
+      "data_display": "none",
+      "auto_resolves": false,
+      "composes_to_degraded": false,
+      "required_content": [
+        "The canonical headline.",
+        "One or two sentences from the surface registration saying what will appear here and how it gets here (recorded, captured, imported or shared).",
+        "The surface's single primary action when the surface has one; a surface whose content originates elsewhere links to that place instead.",
+        "An accessible name for the state so a screen reader reads the headline and the body once, in order."
+      ],
+      "forbidden_content": [
+        "Wording that frames the absence as the user's omission.",
+        "Fabricated sample figures, charts or transactions that could be mistaken for real data.",
+        "Error styling, warning icons or retry actions: nothing failed.",
+        "A prompt to grant a permission; a denied permission is permission_denied, not empty."
+      ],
+      "recovery_action": {
+        "id": "primary_action",
+        "label": "{primary_action}",
+        "behaviour": "Starts the surface's primary way of creating content, for example recording a transaction or adding a debt. The label is the surface's registered primary action and is identical on every client. A surface without a creating action links to the place where its content originates."
+      },
+      "copy": {
+        "headline": "Nothing here yet",
+        "body": "{what_appears_here}"
+      },
+      "signal": "client_state.empty"
+    },
+    {
+      "id": "loading",
+      "name": "loading",
+      "definition": "The surface, region or action has asked for data it does not yet have, and the request is still within its expected time.",
+      "triggering_condition": "A first read, or a read after all displayable data was discarded, has started and has neither succeeded nor failed. A refresh of data already on screen is not loading: the data stays visible with a refresh indicator, and a failed refresh produces stale.",
+      "scopes": ["surface", "region", "action"],
+      "data_display": "none",
+      "auto_resolves": true,
+      "composes_to_degraded": false,
+      "required_content": [
+        "A skeleton or progress indicator shaped like the content it replaces, so the layout does not jump when data arrives.",
+        "After the slow threshold, the canonical headline and body, so a long wait is acknowledged rather than silent.",
+        "A bounded duration: the state ends in empty, content, offline, error or stale and never persists indefinitely; the slow threshold and the timeout are published by the client performance budgets (T-QA-06, T-QA-08, T-QA-13), not here.",
+        "Exactly one assistive-technology announcement of loading and one of completion; a skeleton is hidden from assistive technology or labelled once."
+      ],
+      "forbidden_content": [
+        "Placeholder numbers or currency amounts inside a skeleton.",
+        "An indicator with no end: a request that exceeds its timeout leaves this state.",
+        "Blocking regions of the surface that do not depend on the pending request.",
+        "Copy before the slow threshold; the skeleton is the state."
+      ],
+      "recovery_action": {
+        "id": "cancel",
+        "label": "Cancel",
+        "behaviour": "Stops waiting for the pending request and leaves the affected surface or region in the state it had before the request started, or returns to the surface the user came from when there is none. It never produces empty, because no read completed. Nothing the user entered is discarded. Offered only after the slow threshold."
+      },
+      "copy": {
+        "headline": "Still loading",
+        "body": "This is taking longer than expected."
+      },
+      "signal": "client_state.loading"
+    },
+    {
+      "id": "error",
+      "name": "error",
+      "definition": "A request failed, or a response could not be used, for a reason the client cannot or must not explain, and the surface, region or action cannot fulfil its purpose.",
+      "triggering_condition": "A read or write receives a failure response, an unusable response, or no response within its timeout while the platform reports connectivity, and no displayable data exists for the affected region (if it does, the region is stale). A field-level validation rejection uses this state at action scope with the field named.",
+      "scopes": ["surface", "region", "action"],
+      "data_display": "none",
+      "auto_resolves": false,
+      "composes_to_degraded": true,
+      "required_content": [
+        "The canonical headline naming what was attempted in plain words.",
+        "The single recovery action.",
+        "The user's unsaved input, preserved exactly, when the failure followed a write.",
+        "For a validation rejection: the affected field named in the accessible error message and what is needed stated, never what the user did wrong; the guidance is exposed as that field's own error text, programmatically associated with the field, and focus moves to the rejected field rather than to the headline.",
+        "The correlation identifier returned by the service, when one exists, carried with any support report opened from this surface (T-CON-12 owns the identifier); it is not part of the state copy.",
+        "For every other failure: focus moved to the headline, or an assertive announcement of it, so keyboard and screen-reader users learn of the failure without searching."
+      ],
+      "forbidden_content": [
+        "A cause the client did not receive from the service in a user-facing form.",
+        "Internal identifiers, stack detail, status codes, exception names, provider names or raw service messages.",
+        "Any statement about whether a write did or did not take effect unless the service confirmed it; a repeated write is safe only under the idempotency rules T-CON-12 publishes.",
+        "Wording that blames the user or labels their input as faulty.",
+        "Another person's existence, name or account state.",
+        "For a validation rejection: resubmitting the rejected input unchanged, or guidance shown only in a notice that is not associated with the field."
+      ],
+      "recovery_action": {
+        "id": "retry",
+        "label": "Try again",
+        "label_by_variant": {
+          "validation": "{submit_label}"
+        },
+        "behaviour": "Repeats the failed request. For a failure other than a validation rejection the input is unchanged and a write repeats under the same idempotency key so it cannot duplicate a ledger entry; whether a failure is retryable comes from the retry classification T-CON-12 publishes. For a validation rejection the action is the form's submit control: focus is already on the rejected field with its guidance, and the action submits the edited input, never the rejected input unchanged. That control keeps its registered label (the submit_label placeholder) while the validation error is shown and is not relabelled with the canonical label; the coverage assertion checks the registered label for this variant, so a form is not forced to say Try again where it says Save."
+      },
+      "copy": {
+        "headline": "Couldn't {attempt}",
+        "body": "Try again in a moment.",
+        "variants": {
+          "validation": {
+            "when": "The service identified a rejected field. Rendered at action scope; focus moves to the rejected field and the body is exposed as that field's error text. The recovery action is the form's submit control under its registered label.",
+            "headline": "Couldn't {attempt}",
+            "body": "{field_guidance}"
+          }
+        }
+      },
+      "signal": "client_state.error"
+    },
+    {
+      "id": "offline",
+      "name": "offline",
+      "definition": "The platform reports that the device has no connectivity, and the surface, region or action needs the service and has no displayable data.",
+      "triggering_condition": "The platform reports no network connectivity and the affected read has no displayable data, or the affected action needs the service and could not be queued locally. If displayable data exists, the region is stale with the offline marker, not offline. Requests that fail while the platform reports connectivity are error, not offline. Android surfaces backed by the local database are never offline for reads.",
+      "scopes": ["surface", "region", "action"],
+      "data_display": "none",
+      "auto_resolves": true,
+      "composes_to_degraded": true,
+      "required_content": [
+        "The canonical headline stating the known condition.",
+        "The single recovery action, plus an automatic retry of reads when connectivity returns, so the state clears without the user doing anything.",
+        "Continued access to everything that works without the service: local records, manual entry, saved answers and navigation.",
+        "For a write that was queued locally, the pending marker of the happy path rather than this state; offline is shown only when nothing could be queued.",
+        "A polite assistive-technology announcement when the state is entered and when it clears."
+      ],
+      "forbidden_content": [
+        "Presenting the condition as an unknown failure or as the service being at fault.",
+        "Hiding or disabling features that do not need connectivity.",
+        "Discarding the user's unsaved input.",
+        "Any figure the client has not received; the offline state shows no data."
+      ],
+      "recovery_action": {
+        "id": "retry",
+        "label": "Try again",
+        "behaviour": "Repeats the request now. Reads are also repeated automatically as soon as connectivity returns; an action that could not be queued waits for the user."
+      },
+      "copy": {
+        "headline": "You're offline",
+        "body": "Try again when you're back online."
+      },
+      "signal": "client_state.offline"
+    },
+    {
+      "id": "stale",
+      "name": "stale",
+      "definition": "The surface or region shows data it holds but could not refresh, or data older than its declared freshness window, so the figures may not be current.",
+      "triggering_condition": "Displayable data exists and either the most recent refresh attempt failed or could not be made (for any cause, including no connectivity), or the data's age exceeds the freshness window the surface declares in its registration, for example a currency rate under E30.",
+      "scopes": ["surface", "region"],
+      "data_display": "shown_marked",
+      "auto_resolves": true,
+      "composes_to_degraded": false,
+      "required_content": [
+        "The data exactly as last received: money is shown in the integer minor units and currency the service sent, never recomputed or re-derived on the client.",
+        "One canonical marker per stale region carrying the time of the last successful refresh, placed at the head of the region and programmatically associated with the group of figures it qualifies (a region-level accessible description, or appended to the region's own accessible name, never replacing it, and never a per-figure association that would re-announce the marker after every figure), as text and not colour alone; a long list gets at most a short per-figure flag and never a repeated marker.",
+        "The single recovery action.",
+        "The offline marker (the offline headline) beside the region's stale marker when the platform reports no connectivity, so the user knows why a refresh will not succeed yet, without leaving this state.",
+        "For shared data: display only while the offline lease bound published by T-CON-04 has not elapsed; when it elapses without a successful refresh, the cached shared data leaves the view and the region follows the permission_denied rendering for a previously granted shared region.",
+        "A visual treatment distinct from confirmed values (T-DSY-01 owns the treatment); the marker text is the minimum."
+      ],
+      "forbidden_content": [
+        "Presenting the figures as current: no stale region without its marker.",
+        "A money-committing action (settle, pay, transfer, confirm) pre-filled from stale figures without a successful refresh first; if that refresh fails, the action is offline or error at action scope.",
+        "Any figure derived on the client from the stale data, such as projected balances, deltas or amounts since the last update.",
+        "Widening what is shown: a stale aggregate never reveals detail the active grant did not cover.",
+        "Blame toward another person for the data not updating, or an invented cause for the failed refresh.",
+        "A marker repeated after every figure, which makes a long stale list unusable with a screen reader."
+      ],
+      "recovery_action": {
+        "id": "refresh",
+        "label": "Refresh",
+        "behaviour": "Requests the current data and replaces the stale figures only when the request succeeds; on failure the stale figures and marker remain."
+      },
+      "copy": {
+        "headline": "Last updated {last_updated}",
+        "body": "Showing what was last saved."
+      },
+      "signal": "client_state.stale"
+    },
+    {
+      "id": "permission_denied",
+      "name": "permission-denied",
+      "definition": "Something on the surface cannot be shown or done because access to it is not currently available to this client: a device permission is not granted, the plan does not include the feature, no active sharing grant covers the data, or the operator's role does not include the capability. Everything else on the surface stays usable.",
+      "triggering_condition": "The platform reports a permission or restricted setting as not granted; or the service refuses a request because the account's plan does not include the feature (an entitlement deny); or the service refuses a cross-user read because no active grant covers it, whether the grant is absent, revoked or expired; or cached shared data passes the offline lease bound without confirmation; or an administrative capability is outside the operator's role. The concrete refusal shapes are bound to this identifier by T-CON-12.",
+      "scopes": ["surface", "region", "action"],
+      "data_display": "hidden",
+      "auto_resolves": false,
+      "composes_to_degraded": false,
+      "required_content": [
+        "The affected capability named in product terms and the kind of access it needs, per cause.",
+        "Everything else keeps working, and the copy says so: navigation, unaffected regions, manual alternatives and previously permitted features stay fully operable, because the app is usable with every optional permission denied.",
+        "The single recovery action, leading to the one place where this access is controlled; for the sharing cause the action never contacts the other person.",
+        "Removal from view of any cached data behind the denial, within the bounds T-CON-04 publishes for shared data.",
+        "Identical copy for the sharing cause whether the grant is absent, revoked, expired or unverifiable, so the copy itself discloses nothing about the other person's decisions or data.",
+        "For a shared region that was previously granted and is now refused or past its lease bound: the region leaves the view together with its cached data and the viewer's own sharing overview no longer lists it; the sharing copy is rendered only when the viewer navigates to the item explicitly (a link, a bookmark or a notification issued while the grant was active), never as a persistent card standing where the figure was. No notification is issued for an item the viewer can no longer access; the notification and sharing tickets own that rule, so explicit navigation never means a post-revocation notification. The change from a visible figure to nothing is the inherent signal of unilateral revocation that ADR-005 accepts; the taxonomy adds no durable artefact to it.",
+        "Its own region state only: a denied or refused supplementary region never makes the host surface degraded, because this state already names what still works and offers one action."
+      ],
+      "forbidden_content": [
+        "Anything in the copy or the layout that reveals whether data exists behind the denial: counts, totals, hidden-item hints, names, or a persistent denial card standing where a shared figure used to be.",
+        "Blocking the whole surface, hiding unaffected features, or repeated prompts; a rationale is shown at most once per session unless the user asks, and a region-scope denial that is present on later launches is not re-announced and does not take focus again.",
+        "A bypass or an attempt of the denied operation, or an action that notifies or asks the other person for access.",
+        "Blame for the denial or an invented reason for it.",
+        "Treating the condition as error or empty, or adding a surface-level degraded notice on top of it."
+      ],
+      "recovery_action": {
+        "id": "review_access",
+        "label": "Review access",
+        "label_by_cause": {
+          "device": "Allow {permission}",
+          "plan": "See plans",
+          "sharing": "See what's shared with you",
+          "role": "Request access"
+        },
+        "behaviour": "Opens the single place where this access is controlled: the platform's permission request, or the app's system settings page when the platform will not prompt again, for a device permission; the plan overview for a plan entitlement; the user's own sharing overview for a sharing grant; the administrative access request flow for a role capability. Until T-CON-12 binds a service refusal to a cause, the default label opens the account's access overview, which lists plan, sharing and device access without naming any denied item. It never attempts the denied operation and never contacts another person."
+      },
+      "copy": {
+        "headline": "You don't have access to this right now",
+        "body": "Everything else keeps working.",
+        "variants": {
+          "device": {
+            "when": "A device permission or restricted setting is not granted.",
+            "headline": "{capability} needs {permission}",
+            "body": "You can keep using everything else without it."
+          },
+          "plan": {
+            "when": "The service refused because the plan does not include the feature.",
+            "headline": "Not included in your plan",
+            "body": "Everything in your current plan keeps working."
+          },
+          "sharing": {
+            "when": "No active sharing grant covers the data, or cached shared data passed the offline lease bound.",
+            "headline": "You don't have access to this right now",
+            "body": "Everything else keeps working."
+          },
+          "role": {
+            "when": "An administrative capability is outside the operator's role.",
+            "headline": "Not part of your current access",
+            "body": "Everything else keeps working."
+          }
+        }
+      },
+      "causes": [
+        {
+          "id": "device",
+          "description": "A platform permission or restricted setting (SMS, notification listener, camera, storage, notifications) is not granted. Determined by the client from the platform; not a service result.",
+          "contract_level": false,
+          "client_determined": true
+        },
+        {
+          "id": "plan",
+          "description": "The service refused because the account's plan does not include the feature or the feature is disabled: an entitlement deny under the server-authoritative entitlement model (ADR-007). T-CON-12 binds the refusal shape.",
+          "contract_level": true,
+          "client_determined": false
+        },
+        {
+          "id": "sharing",
+          "description": "The service refused a cross-user read because no active grant covers it (absent, revoked or expired under the default-deny sharing model of ADR-005), or cached shared data passed the offline lease bound that T-CON-04 publishes without confirmation. Contract-level for the refusal; client-determined for the lease bound.",
+          "contract_level": true,
+          "client_determined": true
+        },
+        {
+          "id": "role",
+          "description": "The administrative service refused because the capability is outside the operator's role, or because the operator attempted to act as the second approver of their own action. A dual-control action that is awaiting another approver is a decision state of the happy path, not a denial. T-CON-12 binds the refusal shape within the administrative contract.",
+          "contract_level": true,
+          "client_determined": false
+        }
+      ],
+      "guarantees": {
+        "rest_of_surface_usable": true,
+        "discloses_hidden_data": false
+      },
+      "signal": "client_state.permission_denied"
+    },
+    {
+      "id": "quota_exceeded",
+      "name": "quota-exceeded",
+      "definition": "A metered capability is unavailable because the allowance for the current window has been used, while everything else on the surface, including what the capability already produced, stays available.",
+      "triggering_condition": "The service refuses a metered request because the plan's request or token allowance for the window is used, or because a short-window rate limit was reached; both are stated by the service and never estimated by the client. Applies to server-metered capabilities such as AI questions. Usage through a user's own provider key is metered; its tokens are never charged against plan quota and never produce this state, while the plan's request allowance still applies and can (ADR-023).",
+      "scopes": ["region", "action"],
+      "data_display": "shown",
+      "auto_resolves": true,
+      "composes_to_degraded": false,
+      "required_content": [
+        "What is still available, stated positively: previously produced results (for example saved answers) and every capability outside the metered one.",
+        "The limit that was reached, in the plain terms the service stated (a count and its window), never as a monetary amount.",
+        "When the allowance resets, only when the service stated it; an allowance that never resets, or one that is zero, states no reset and the sentence is omitted.",
+        "The single recovery action.",
+        "Metered controls disabled but visible, exposing their disabled state and the headline as its reason to assistive technology.",
+        "Its own region or action state only: an exhausted supplementary capability never makes the host surface degraded, because this state already names what still works and offers one action, and a surface-level re-check would generate the refused requests this state forbids."
+      ],
+      "forbidden_content": [
+        "Hiding or disabling anything the quota does not cover, including the history of what was produced.",
+        "A reason the service did not give, a counter the service did not send, or a reset time the client computed itself.",
+        "Any monetary amount, price or balance in the state copy.",
+        "A bypass, or repeated attempts that only generate refused requests.",
+        "Wording that frames the exhaustion as misuse.",
+        "A surface-level degraded notice on top of this state."
+      ],
+      "recovery_action": {
+        "id": "view_usage",
+        "label": "See usage and plans",
+        "behaviour": "Opens the account's usage view showing the limit, what was used, the reset time when known, and the plans available. It is informational: it never claims that a purchase will restore the capability unless the service states so. For a short-window rate limit the same view shows the limit and its window; the plans it lists are context, not the remedy, and the copy of the rate_limited variant says the limit is temporary."
+      },
+      "copy": {
+        "headline": "You've reached this period's limit of {limit}",
+        "body": "{still_available} still work.",
+        "variants": {
+          "with_reset": {
+            "when": "The service stated when the allowance resets.",
+            "headline": "You've reached this period's limit of {limit}",
+            "body": "{still_available} still work. Resets {resets_at}."
+          },
+          "rate_limited": {
+            "when": "The service stated a short-window rate limit within quota rather than the period's allowance.",
+            "headline": "You've reached the limit of {limit} for now",
+            "body": "{still_available} still work. Resets {resets_at}."
+          }
+        }
+      },
+      "guarantees": {
+        "states_what_remains_available": true
+      },
+      "signal": "client_state.quota_exceeded"
+    },
+    {
+      "id": "degraded",
+      "name": "degraded",
+      "definition": "A capability the surface offers is unavailable because a dependency has failed or is paused, but the surface still does what it exists for with what it shows.",
+      "triggering_condition": "A supplementary region or capability is in error or offline, or a platform capability such as automatic capture is paused for a platform reason (the capture-health conditions T-AND-07 publishes), while the surface's purpose remains achievable. The decision test is whether the user can still do what this surface exists for: yes gives degraded with the capability named; no gives error. A supplementary region in permission_denied or quota_exceeded never produces degraded: those states already name what still works and offer one action, and the surface renders only the region state.",
+      "scopes": ["surface"],
+      "data_display": "shown",
+      "auto_resolves": true,
+      "composes_to_degraded": false,
+      "required_content": [
+        "The surface's content and its primary purpose, fully operable.",
+        "The canonical headline naming the unavailable capability in product terms.",
+        "The single recovery action, plus automatic recovery when the dependency returns.",
+        "The affected region's own state (for example the AI panel in error) rendered where the capability would appear, so the notice and the gap agree.",
+        "A polite assistive-technology announcement when the notice appears and when it clears; the notice never takes focus from the user's task."
+      ],
+      "forbidden_content": [
+        "Provider, vendor or service names, internal identifiers or status detail.",
+        "Full-surface blocking, modal dialogs, or replacing content with the notice.",
+        "A cause the client was not given in a user-facing form; not being available right now is the whole claim.",
+        "Silently omitting the capability with no notice, which would present a partial surface as complete.",
+        "Substitute figures computed on the client for the unavailable dependency, such as a locally estimated currency rate.",
+        "Rendering this state for a denied permission, an entitlement deny, a missing grant or an exhausted quota, whose conditions do not self-resolve and whose re-check would repeat refused requests."
+      ],
+      "recovery_action": {
+        "id": "retry",
+        "label": "Try again",
+        "behaviour": "Re-checks the affected capability now; the client also re-checks automatically at the cadence the surface declares and clears the notice when the capability returns."
+      },
+      "copy": {
+        "headline": "{capability} isn't available right now",
+        "body": "Everything else is working. We'll keep checking."
+      },
+      "signal": "client_state.degraded"
+    }
+  ],
+  "precedence": [
+    "permission_denied",
+    "quota_exceeded",
+    "stale",
+    "offline",
+    "error",
+    "degraded",
+    "loading",
+    "empty"
+  ],
+  "precedence_rule": "When more than one condition holds for the same region, the earliest identifier in the precedence list is rendered: data behind a denial is never shown even when cached, a metered action stays blocked whatever the data shows, held data is shown as stale rather than hidden behind offline or error, and a known offline condition is never presented as an unknown error. Degraded is the surface-scope notice that accompanies a supplementary region in error or offline, or a platform pause, without replacing it; a supplementary region in permission_denied or quota_exceeded is rendered alone and adds no surface notice. Loading applies only before the first data and empty only after a successful read.",
+  "distinctions": [
+    {
+      "id": "offline_vs_stale",
+      "title": "Offline versus stale",
+      "states": ["offline", "stale"],
+      "observable_difference": "In stale the figures are on screen, the region carries one text marker 'Last updated {last_updated}' associated with all of them, and the action is Refresh. In offline there are no figures: the headline 'You're offline' stands where they would be and the action is Try again. The same loss of connectivity produces stale where the surface already holds data and offline where it does not. When connectivity is the known cause of staleness, stale adds the offline marker beside the region's last-updated marker without changing state.",
+      "data_shown": {
+        "offline": "none",
+        "stale": "shown_marked"
+      },
+      "resolution": "Both clear automatically when a refresh succeeds; stale keeps the old figures on screen until then, offline shows none."
+    },
+    {
+      "id": "error_vs_degraded",
+      "title": "Error versus degraded",
+      "states": ["error", "degraded"],
+      "observable_difference": "In error the content the user came for is absent and 'Couldn't {attempt}' with Try again stands in its place; the surface does not do what it exists for. In degraded the content is present and usable and a non-blocking notice '{capability} isn't available right now' names the one capability that is missing, with that capability's own region showing its state. The decision test is whether the user can still complete the surface's purpose.",
+      "data_shown": {
+        "error": "none",
+        "degraded": "shown"
+      },
+      "resolution": "Error waits for a new attempt (the user's Try again or a permitted automatic retry); degraded clears itself when the dependency returns and offers Try again meanwhile."
+    }
+  ],
+  "contract_conditions": [
+    {
+      "id": "entitlement_denied",
+      "description": "The service refused because the account's plan does not include the feature or the feature is disabled. Whether an upgrade path exists is stated by the refusal shape; the client does not assume one.",
+      "binds_to": "permission_denied",
+      "cause": "plan",
+      "contract_level": true,
+      "binding_owner": "T-CON-12 (PenniLogic/contracts#16) binds the refusal shape; ADR-007 makes entitlements server-authoritative."
+    },
+    {
+      "id": "grant_not_active",
+      "description": "The service refused a cross-user read because no active grant covers the member, category and detail level. Absent, revoked and expired grants are one condition to the client, with identical copy.",
+      "binds_to": "permission_denied",
+      "cause": "sharing",
+      "contract_level": true,
+      "binding_owner": "T-CON-04 publishes the grant and revocation shapes and both revocation bounds; T-CON-12 binds the refusal shape."
+    },
+    {
+      "id": "offline_lease_elapsed",
+      "description": "Cached shared data passed the offline lease bound without a successful refresh. The client denies on its own using the number T-CON-04 publishes; there is no service result.",
+      "binds_to": "permission_denied",
+      "cause": "sharing",
+      "contract_level": false,
+      "binding_owner": "T-CON-04 publishes the bound; the client applies it."
+    },
+    {
+      "id": "device_permission_not_granted",
+      "description": "The platform reports a permission or restricted setting as not granted. Determined by the client; no service result.",
+      "binds_to": "permission_denied",
+      "cause": "device",
+      "contract_level": false,
+      "binding_owner": "The client platform layer; T-AND-07 publishes the Android restricted-settings matrix."
+    },
+    {
+      "id": "role_capability_denied",
+      "description": "The administrative service refused because the capability is outside the operator's role, or because the operator attempted to act as the second approver of their own action. An action awaiting another approver is a decision state of the happy path, not this condition.",
+      "binds_to": "permission_denied",
+      "cause": "role",
+      "contract_level": true,
+      "binding_owner": "T-CON-12 binds the refusal shape within the administrative contract."
+    },
+    {
+      "id": "quota_exhausted",
+      "description": "The service refused a metered request because the plan's request or token allowance for the window is used. The refusal states the limit and, when known, the reset time.",
+      "binds_to": "quota_exceeded",
+      "contract_level": true,
+      "binding_owner": "T-CON-12 binds the quota-exceeded shape; the entitlement and quota model is ADR-023 (T-ADR-ENT-09)."
+    },
+    {
+      "id": "rate_limited",
+      "description": "The service refused because a short-window rate limit was reached within quota. The refusal should state the limit, its window and when it lifts so the rate_limited copy variant stays truthful; whether a shape states a reset is T-CON-12's decision, and the reset sentence is omitted when absent.",
+      "binds_to": "quota_exceeded",
+      "contract_level": true,
+      "binding_owner": "T-CON-12 binds the rate-limit shape."
+    },
+    {
+      "id": "dependency_unavailable",
+      "description": "The service or the AI boundary reports that a dependency such as an AI provider or a rate source is unavailable. The identifier is bound at the scope of the request that received it; the host surface composes to degraded when its purpose remains achievable and the failed region is supplementary.",
+      "binds_to": "error",
+      "contract_level": true,
+      "binding_owner": "T-CON-12 binds the shape and distinguishes it from a refusal and from quota exhaustion."
+    },
+    {
+      "id": "request_failed",
+      "description": "A request received a failure response, an unusable response, or no response within its timeout while the platform reported connectivity.",
+      "binds_to": "error",
+      "contract_level": true,
+      "binding_owner": "T-CON-12 binds the generic failure shapes and their retry classification."
+    },
+    {
+      "id": "validation_rejected",
+      "description": "The service rejected a write for a field-level reason and named the field without echoing a monetary value. Rendered at action scope with the validation variant of error.",
+      "binds_to": "error",
+      "contract_level": true,
+      "binding_owner": "T-CON-12 binds the validation shape."
+    },
+    {
+      "id": "capture_paused_by_platform",
+      "description": "Automatic capture is paused for a platform reason such as a force-stop, a restricted standby bucket, a background restriction or a private-space lock, while the rest of the app works. The surface stays fully usable and shows the degraded notice naming automatic capture until capture health is restored.",
+      "binds_to": "degraded",
+      "contract_level": false,
+      "binding_owner": "T-AND-07 publishes the capture-health condition identifiers and binds each to exactly one state; its reason identifiers are published under this condition.",
+      "reasons": [
+        {
+          "id": "force_stopped",
+          "client": "android",
+          "description": "The user force-stopped the app. Its receivers, scheduled jobs and pending intents stay off until the user opens the app again; on Android 15 and later pending intents are also cancelled.",
+          "limitation": "On Android 11 to 14 a force-stop cannot be told apart from a swipe away from Recents with public platform interfaces and is therefore not reported; the pause is shown only when the platform can say so (Android 15 and later) or when the profile the app ran in was stopped.",
+          "clears_when": "Capture health is restored: the capture components are registered again and a health probe succeeds. A process start alone never clears it.",
+          "published_by": "PenniLogic/android#57 (T-AND-07); source of record docs/platform/capture-health-identifiers.json at android main ff15e94e."
+        },
+        {
+          "id": "private_space_paused",
+          "client": "android",
+          "description": "The private space holding the app was locked, which stops every app inside it and hides its notifications; nothing is captured until the space is unlocked. A clone profile is classified the same way, since the public platform interfaces cannot name the private space explicitly.",
+          "clears_when": "Capture health is restored after the space is unlocked.",
+          "privacy": "Records that the user chose to run the app inside a private space, which is a concealment choice: kept on the device as a per-device state record and a local log event only, counted in aggregate at most, never joined to an account identifier, not exported by this baseline (any future export names its purpose, aggregation and retention in the client's record first), and erased with the capture-health record when the account signs out or is erased.",
+          "published_by": "PenniLogic/android#57 (T-AND-07); source of record docs/platform/capture-health-identifiers.json at android main ff15e94e."
+        },
+        {
+          "id": "standby_bucket_restricted",
+          "client": "android",
+          "description": "The platform placed the app in the restricted standby bucket, so scheduled jobs run about once a day and the capture pipeline cannot keep up.",
+          "clears_when": "Capture health is restored: the capture components are registered in the current process and a health probe succeeds, the same path as force_stopped. A process start alone never clears it; while the bucket stays restricted the reason is refreshed at each start.",
+          "published_by": "PenniLogic/android#57 (T-AND-07); source of record docs/platform/capture-health-identifiers.json at android main ff15e94e."
+        },
+        {
+          "id": "background_restricted",
+          "client": "android",
+          "description": "The user applied a background restriction to the app in system settings; background work is not run.",
+          "clears_when": "Capture health is restored: the capture components are registered in the current process and a health probe succeeds, the same path as force_stopped. A process start alone never clears it; while the restriction stays the reason is refreshed at each start.",
+          "published_by": "PenniLogic/android#57 (T-AND-07); source of record docs/platform/capture-health-identifiers.json at android main ff15e94e."
+        }
+      ]
+    },
+    {
+      "id": "capture_blocked_by_setting",
+      "description": "Automatic capture cannot run because a permission or restricted setting is not granted. Rendered with the device cause; the single recovery action opens the platform's own settings page or prompt.",
+      "binds_to": "permission_denied",
+      "cause": "device",
+      "contract_level": false,
+      "binding_owner": "T-AND-07 publishes the condition identifiers; the client renders the device cause. Its reason identifiers are published under this condition.",
+      "reasons": [
+        {
+          "id": "listener_access_not_granted",
+          "client": "android",
+          "description": "Notification access is not granted for the capture listener and the install source is not locked, so the platform's normal settings page enables it.",
+          "clears_when": "The user grants notification access.",
+          "published_by": "PenniLogic/android#57 (T-AND-07); source of record docs/platform/capture-health-identifiers.json at android main ff15e94e."
+        },
+        {
+          "id": "restricted_setting_locked",
+          "client": "android",
+          "description": "The restricted-settings matrix says this install source is locked on this platform level and the setting is not granted. The rendered copy is the canonical device-cause copy of permission_denied, unchanged; this reason changes only the destination of the single review_access action.",
+          "recovery_destination": "The app's App info page, where the platform offers to allow restricted settings, instead of the setting's own page. Step-by-step unlock guidance is tester documentation, not product copy: product copy that guides the unlock is added to this taxonomy first, as a device-cause variant or a placeholder, before any client renders it, and this version adds none.",
+          "clears_when": "The user unlocks restricted settings for the app and grants the setting, or the build is reinstalled from an unlocked source.",
+          "published_by": "PenniLogic/android#57 (T-AND-07); source of record docs/platform/capture-health-identifiers.json at android main ff15e94e."
+        },
+        {
+          "id": "capture_permission_not_granted",
+          "client": "android",
+          "description": "A runtime permission automatic capture needs (SMS) is not granted. Reading the permission state requests nothing and shows no prompt.",
+          "clears_when": "The user grants the permission.",
+          "published_by": "PenniLogic/android#57 (T-AND-07); source of record docs/platform/capture-health-identifiers.json at android main ff15e94e."
+        }
+      ]
+    },
+    {
+      "id": "resource_pressure",
+      "description": "Low storage or memory pauses optional cache growth while queued financial writes are preserved. Rendered as degraded with the affected capability named until T-AND-06 adds resource-degraded identifiers to this taxonomy first.",
+      "binds_to": "degraded",
+      "contract_level": false,
+      "binding_owner": "T-AND-06 owns the resource-degraded identifiers and adds them here before any client uses them."
+    }
+  ],
+  "reason_rule": "A reason identifier refines one client-determined condition (contract_level false) for observability and testing: it says why the condition holds on that client. It never adds a state, a cause or a second recovery action, never selects different canonical copy, and at most changes the destination of the condition's single recovery action. Reason identifiers are published here before any client asserts them, through the extension procedure, byte-identical to the client's implementation and unique across all conditions; the shapes of contract-level conditions belong to T-CON-12 and carry no reasons here. A reason is not a signal attribute: the taxonomy signal keeps exactly the published attributes, and a client that records a reason does so in its own diagnostic event under the same privacy rules as the signal.",
+  "excluded_conditions": [
+    {
+      "id": "pending_sync",
+      "description": "A locally queued write awaiting sync is a status marker on the happy path (idempotent replay on reconnect), not a non-happy state.",
+      "owner": "Domain model section 7 and the sync tickets (T-SYN-03)."
+    },
+    {
+      "id": "filtered_no_results",
+      "description": "A filter that matches nothing is a content state with a no-results message; the surface has data.",
+      "owner": "Component copy under the design system (E34)."
+    },
+    {
+      "id": "ai_refusal",
+      "description": "The AI declined to answer within the advice boundary. This is a successful response whose content is a refusal; the surface is in its content state. T-CON-12 distinguishes a refusal from a provider failure and from quota exhaustion.",
+      "owner": "AI product and harness tickets (E17, E18)."
+    },
+    {
+      "id": "authentication_required",
+      "description": "Sign-in, session expiry, step-up and recovery states are authentication states with their own flows.",
+      "owner": "T-AUTH-01 and the identity epic (E03)."
+    },
+    {
+      "id": "confirmation_and_success",
+      "description": "Success, destructive confirmation, cooling-off, undo and recovery-flow states are decision or happy-path states, not non-happy paths.",
+      "owner": "Design-system component tickets (E34)."
+    }
+  ],
+  "content_rendering_rule": "A content rendering is an ordinary content state that carries one canonical string, so every client shows the same words where a person's name, authored text or complete figure used to be. It is never permission_denied or any other taxonomy state and adds no state identifier. Its copy names no person, states no cause and carries no placeholder, so no name can appear; it follows every copy rule of this file and does not embellish what the service states. A rendering that qualifies a figure is a text marker associated with the group of figures it qualifies and announced once, as for stale. New copy of this kind is added here first (ADR-021 section 6.2).",
+  "content_renderings": [
+    {
+      "id": "erased_member_placeholder",
+      "description": "The seat of a split-group member whose account was erased: an unclaimable placeholder with no name, alias or account, whose shares, payments and settlements survive as the counterparties' own record (ADR-021 sections 3.3 and 4.1). Rendered where the member's name would appear.",
+      "rendered_in": "content",
+      "copy": {
+        "label": "Former member"
+      },
+      "source": "ADR-021 section 6.2 (PenniLogic/docs#41)",
+      "owners": [
+        "T-CON-04 (PenniLogic/contracts#8) and T-SPL-03 (PenniLogic/api#49) supply the member state; the Android and web split-group surfaces render it."
+      ]
+    },
+    {
+      "id": "redacted_description",
+      "description": "A split-expense description whose author's account was erased: the text is gone while the expense's money, date and seats remain (ADR-021 section 3.3). Rendered where the description would appear.",
+      "rendered_in": "content",
+      "copy": {
+        "label": "Description no longer available"
+      },
+      "source": "ADR-021 section 6.2 (PenniLogic/docs#41)",
+      "owners": [
+        "T-CON-04 (PenniLogic/contracts#8) and T-SPL-03 (PenniLogic/api#49) supply the description state; the Android and web split-group surfaces render it."
+      ]
+    },
+    {
+      "id": "redacted_note",
+      "description": "A settlement note whose author's account was erased: the text is gone while the settlement's money, seats and instant remain (ADR-021 section 3.3). Rendered where the note would appear.",
+      "rendered_in": "content",
+      "copy": {
+        "label": "Note no longer available"
+      },
+      "source": "ADR-021 section 6.2 (PenniLogic/docs#41)",
+      "owners": [
+        "T-CON-04 (PenniLogic/contracts#8) and T-SPL-03 (PenniLogic/api#49) supply the note state; the Android and web split-group surfaces render it."
+      ]
+    },
+    {
+      "id": "pseudonymised_viewer",
+      "description": "A transparency-log entry recording that a since-erased account viewed the reader's shared data: the viewer reference is opaque and resolves to no person, while the category, level and instant remain the reader's own record (ADR-021 section 4.1). Rendered where the viewer's name would appear.",
+      "rendered_in": "content",
+      "copy": {
+        "label": "Former viewer"
+      },
+      "source": "ADR-021 section 6.2 (PenniLogic/docs#41)",
+      "owners": [
+        "T-TRU-04 (PenniLogic/android#43) renders it; T-CON-09 (PenniLogic/contracts#14) supplies the viewer reference."
+      ]
+    },
+    {
+      "id": "partial_total",
+      "description": "A joint-goal total or household aggregate whose value dropped because a contributor's rows were erased: the surviving contributions are shown and the total is marked partial rather than presented as complete (ADR-021 section 4.1). Rendered as a text marker beside the total.",
+      "rendered_in": "content",
+      "copy": {
+        "label": "Partial total"
+      },
+      "source": "ADR-021 section 6.2 (PenniLogic/docs#41)",
+      "owners": [
+        "T-FAM-06 (PenniLogic/android#54) and T-FAM-07 (PenniLogic/web#22) render it; T-FAM-05 (PenniLogic/api#72) supplies the completeness reason."
+      ]
+    }
+  ],
+  "worked_examples": [
+    {
+      "id": "capture_surface_permission_denied",
+      "title": "Permission-denied capture surface",
+      "surface": "Android transactions home with automatic capture of payment messages",
+      "clients": ["android"],
+      "state": "permission_denied",
+      "cause": "device",
+      "scenario": "The person declined SMS access at install, or a restricted setting blocks the notification listener. They open the transactions home to record a cash payment and check this week's spending.",
+      "shown": [
+        "The transaction timeline with every manually recorded and previously captured entry, fully scrollable and editable.",
+        "The primary action to record a transaction by hand, operable exactly as when capture is on.",
+        "Budgets, debt summaries and every other region, unchanged, with no surface-level notice: the denial is rendered as the capture region's own state and the surface is not degraded.",
+        "In the capture region only: the headline 'Automatic capture needs SMS access', the body 'You can keep using everything else without it.' and the single action 'Allow SMS access'."
+      ],
+      "must_not_show": [
+        "Any count or hint of payment messages on the device; the client cannot read them and must not imply it knows they exist.",
+        "A full-screen permission wall, a blocked primary action, or a system prompt repeated on every launch.",
+        "A surface-level degraded notice or a 'We'll keep checking' promise; a denied permission does not self-resolve.",
+        "Error styling or a retry action; nothing failed.",
+        "Wording that the person denied or forgot something.",
+        "Cached transaction content from before a revoked permission presented as captured today."
+      ],
+      "copy_rendered": {
+        "headline": "Automatic capture needs SMS access",
+        "body": "You can keep using everything else without it.",
+        "action": "Allow SMS access"
+      },
+      "transitions": [
+        "Permission granted: the capture region returns to its content state, or to empty until the first message is captured.",
+        "Permission declined again: nothing changes and the rationale is not repeated in this session.",
+        "Later launches while still denied: the region is present in reading order but is not re-announced and does not take focus.",
+        "Platform will not prompt again: the action opens the app's system settings page instead of prompting.",
+        "Capture paused by the platform after a force-stop while the permission is granted: the surface is degraded, not permission_denied (T-AND-07)."
+      ],
+      "privacy_notes": [
+        "The client never reads or counts messages to decorate the state, and the state discloses nothing about data it cannot access.",
+        "The recorded signal carries the cause and the permission name only; no message content and no device identifier."
+      ],
+      "money_notes": [
+        "Manually recorded amounts are entered and stored in integer minor units with currency exactly as when capture is on; the denial changes no arithmetic."
+      ],
+      "signal_recorded": {
+        "signal": "client_state.permission_denied",
+        "attributes": {
+          "client": "android",
+          "surface_id": "example_transactions_home",
+          "scope": "region",
+          "cause": "device"
+        }
+      }
+    },
+    {
+      "id": "ai_surface_quota_exceeded",
+      "title": "Quota-exceeded AI surface",
+      "surface": "AI explanations panel on the debt payoff surface, and the AI question history",
+      "clients": ["android", "web"],
+      "state": "quota_exceeded",
+      "scenario": "A person on the free plan asks a sixth AI question this month. The service refuses, stating the allowance of five questions for the month and the date it resets.",
+      "shown": [
+        "Every previous question and answer, readable and searchable.",
+        "The debt payoff figures, projections and every non-AI capability, unchanged, with no surface-level notice: the exhaustion is rendered as the composer's own action state and the payoff surface is not degraded.",
+        "The composer disabled but visible, with the headline 'You've reached this period's limit of 5 AI questions', the body 'Saved answers and everything outside AI still work. Resets 1 October.' and the single action 'See usage and plans'.",
+        "The reset sentence only because the service stated the reset time; without it the body ends after the first sentence."
+      ],
+      "must_not_show": [
+        "Hidden or greyed history, or a disabled surface beyond the composer.",
+        "A surface-level degraded notice or an automatic re-check, which would only generate refused requests.",
+        "A price, a monetary amount or a balance in the state copy; plan prices live on the plans view.",
+        "A reset date the client computed, a counter the service did not send, or a reason such as demand.",
+        "A provider or model name, or a way to send the question anyway.",
+        "Wording that the person asked too much."
+      ],
+      "copy_rendered": {
+        "headline": "You've reached this period's limit of 5 AI questions",
+        "body": "Saved answers and everything outside AI still work. Resets 1 October.",
+        "action": "See usage and plans"
+      },
+      "transitions": [
+        "Allowance reset by the service: the composer is enabled again on the next successful request or refresh.",
+        "Plan change confirmed by the service: the state clears when the service stops refusing; the client never assumes a purchase succeeded.",
+        "Provider failure instead of quota: the AI region is error and, because the payoff surface still does what it exists for, the surface is degraded with 'AI explanations isn't available right now'; the two conditions are distinguishable by the service's shape, not by prose.",
+        "Short-window rate limit instead of the period's allowance: the rate_limited variant 'You've reached the limit of 3 AI questions for now' with the lift time the service stated.",
+        "Own provider key in use: its tokens are metered but never charged against plan quota and never produce this state; the plan's request allowance still applies, and its exhaustion produces this state with the request limit the service stated (ADR-023)."
+      ],
+      "privacy_notes": [
+        "The question text is never included in the state or in the recorded signal.",
+        "The signal records that the state was shown and whether the recovery action was taken; usage counts stay with the service."
+      ],
+      "money_notes": [
+        "No amount appears in the state; the limit is a count of questions, not a price."
+      ],
+      "signal_recorded": {
+        "signal": "client_state.quota_exceeded",
+        "attributes": {
+          "client": "web",
+          "surface_id": "example_ai_explanations",
+          "scope": "action"
+        }
+      }
+    },
+    {
+      "id": "shared_balance_stale",
+      "title": "Stale shared balance",
+      "surface": "Household shared aggregate: a partner's groceries total for the month, shown under an aggregate-only grant",
+      "clients": ["android", "web"],
+      "state": "stale",
+      "scenario": "A household member opens the shared groceries total on a train with no signal. The client holds the figure from a refresh two hours earlier and the platform reports no connectivity.",
+      "shown": [
+        "The total exactly as last received from the service, formatted from its integer minor units and currency by the client's locale formatter, for example a synthetic 1234000 INR minor units rendered as twelve thousand three hundred and forty rupees.",
+        "One text marker 'Last updated 2 hours ago' at the head of the region, programmatically associated with the figure, and the body 'Showing what was last saved.'",
+        "The offline marker 'You're offline' beside the region's stale marker, because the platform reported no connectivity.",
+        "The single action 'Refresh'."
+      ],
+      "must_not_show": [
+        "The figure without its region marker, or styled as a confirmed current value.",
+        "A client-computed delta, projection or amount since the last update.",
+        "Any transaction detail; the grant covers the aggregate only and staleness never widens it.",
+        "A settle or transfer action pre-filled from the stale figure without a successful refresh first.",
+        "Wording that the partner has not updated or that blames anyone for the failed refresh.",
+        "The figure after the offline lease bound from T-CON-04 has elapsed without a successful refresh.",
+        "After a refusal or an elapsed lease: a persistent denial card standing where the figure was."
+      ],
+      "copy_rendered": {
+        "headline": "Last updated 2 hours ago",
+        "body": "Showing what was last saved.",
+        "action": "Refresh"
+      },
+      "transitions": [
+        "Connectivity returns and the refresh succeeds: the marker disappears and the current figure replaces the old one.",
+        "Refresh fails while connected: the figure and marker stay, the offline marker is removed, and no cause is invented.",
+        "Offline lease bound elapses without confirmation: the client denies on its own, the cached figure and the region leave the view, and the viewer's own sharing overview no longer lists the item. The drop is local: the grant may still be active server-side, and the item returns on the next confirmed refresh while the grant is still active, so the drop is not a revocation signal. No copy is rendered unless the viewer navigates to the item explicitly, in which case the sharing-cause copy 'You don't have access to this right now' with the action 'See what's shared with you' appears.",
+        "Grant revoked by the partner and the client reconnects: the service refuses and the rendering is identical to the elapsed lease: the region leaves the view and the sharing-cause copy appears only on explicit navigation. The copy is the same as for a grant that never existed; the taxonomy does not claim that the change itself is invisible."
+      ],
+      "privacy_notes": [
+        "The sharing-cause copy is identical for a revoked grant, an expired grant, a never-granted view and an elapsed lease, so the copy itself discloses nothing about the partner's decision.",
+        "Honest residual: a figure that was visible and is then absent is the inherent signal of unilateral revocation, which ADR-005 accepts as the price of the data subject's control. The specified rendering keeps that signal at its floor: no persistent card marks the place where the figure was, the copy never confirms or explains the change, and no control invites repeated checking. In a coercive household the partner who revoked is the data subject, and a durable artefact of their decision on the viewer's screen would work against them; this is why the region leaves the view rather than standing as a denial notice. The acceptance criterion that a denial must not reveal whether data exists behind it is met down to this inherent-signal floor and no further.",
+        "The recovery action after denial opens the viewer's own sharing overview and never notifies or asks the partner; no notification is issued for an item the viewer can no longer access.",
+        "An elapsed offline lease drops the item from the viewer's overview locally while the grant may still be active server-side; it returns on the next confirmed refresh while the grant is still active, so the drop is the default-deny bound at work and not a signal about the partner's decision.",
+        "The recorded signal carries the state, surface and scope only; no amount, no member identity and no grant identifier."
+      ],
+      "money_notes": [
+        "The cached figure is the service's deterministic result in integer minor units with currency; the client formats it and never recalculates, projects or nets it.",
+        "A money-committing action against a stale figure requires a successful refresh first; if that refresh fails the action is offline or error at action scope."
+      ],
+      "signal_recorded": {
+        "signal": "client_state.stale",
+        "attributes": {
+          "client": "android",
+          "surface_id": "example_household_shared_aggregate",
+          "scope": "region"
+        }
+      }
+    }
+  ],
+  "signals": {
+    "prefix": "client_state.",
+    "rule": "Each state identifier names its own signal, client_state.<identifier>, recorded once when the state is entered and once more when its recovery action is taken. Counting signals per surface makes the frequency of each non-happy path measurable.",
+    "attributes": [
+      {
+        "id": "client",
+        "description": "Which client recorded the state.",
+        "values": ["android", "web", "admin"]
+      },
+      {
+        "id": "surface_id",
+        "description": "The registered surface identifier from the client's surface registry."
+      },
+      {
+        "id": "scope",
+        "description": "Where the state was rendered.",
+        "values": ["surface", "region", "action"]
+      },
+      {
+        "id": "cause",
+        "description": "For permission_denied only: which cause class applied.",
+        "values": ["device", "plan", "sharing", "role"]
+      },
+      {
+        "id": "permission",
+        "description": "For the device cause only: the permission or restricted-setting name as the platform names it (its identifier, not the user-facing name the {permission} placeholder renders), never message content."
+      },
+      {
+        "id": "recovery_action_taken",
+        "description": "Whether the single recovery action was used before the state cleared.",
+        "values": ["true", "false"]
+      },
+      {
+        "id": "taxonomy_version",
+        "description": "The taxonomy version the client was pinned to when it recorded the signal."
+      }
+    ],
+    "privacy": [
+      "No amount, balance, price or count of hidden items.",
+      "No identifier of the denied resource, grant or account.",
+      "No other person's identity or decision.",
+      "No message content and no device identifier.",
+      "Signals are counted; they are never joined to financial content."
+    ]
+  },
+  "adoption": {
+    "existing_client_coverage": "None. No client registers surfaces yet; publishing this taxonomy implies no coverage of any existing client. Clients adopt it as their surfaces are built.",
+    "coverage_assertions": [
+      {
+        "id": "client_state_coverage",
+        "statement": "For every surface in the client's surface registry and every state identifier the registry marks applicable to it, the client renders that state with the canonical copy and exactly the one recovery action published in this file at the pinned taxonomy_version. A surface that omits an applicable identifier fails the check, and the gate proves itself with a planted omission.",
+        "owners": ["T-QA-06 (web)", "T-QA-08 (android)", "T-QA-13 (admin)"],
+        "proves": "Every listed surface handles every applicable state identifier."
+      },
+      {
+        "id": "taxonomy_first",
+        "statement": "The client's state enumeration is a subset of the identifiers in this file at the pinned taxonomy_version. An identifier present in a client and absent here fails the check. A new state is added to this file and document first, with its definition, condition, content, recovery action, copy and signal, and only then to any client.",
+        "owners": ["T-QA-06 (web)", "T-QA-08 (android)", "T-QA-13 (admin)"],
+        "proves": "A new state cannot be added to a client without adding it to the taxonomy first."
+      }
+    ],
+    "illustrative_surface_registration": {
+      "surface_id": "example_transactions_home",
+      "client": "android",
+      "applicable_states": ["empty", "loading", "error", "stale", "permission_denied", "degraded"],
+      "item": "transactions",
+      "attempt": "load your transactions",
+      "primary_action": "Add a transaction",
+      "what_appears_here": "Transactions you record, capture or import will appear here.",
+      "capabilities": ["Automatic capture"],
+      "freshness_window_seconds": 86400
+    },
+    "extension_procedure": [
+      "Open a PenniLogic/docs issue naming the new identifier (a state, a permission_denied cause class, a placeholder, a reason under a client-determined condition or a content rendering), the condition that produces it and the surfaces that need it.",
+      "Add it to this file and to the document: a state or cause with its definition, triggering condition, required and forbidden content, exactly one recovery action, canonical copy and signal (adding a state also adds it to the precedence list); a reason under its condition with its meaning and when it clears, byte-identical to the client's implementation; a content rendering with its canonical copy naming no person.",
+      "Bump taxonomy_version: patch for wording that alters no identifier and no canonical string; minor for additions, including a changed canonical string or a new optional schema property; major for a removed or renamed identifier, a removed canonical string or a new required schema property. Record the version in version_history and in the document's version history.",
+      "Run python scripts/check_client_states.py and python -m unittest discover -s scripts/tests; both must pass.",
+      "Obtain the independent reviews the docs repository requires; clients bump their pin only after the change is merged."
+    ],
+    "pending_extensions": [
+      {
+        "owner": "T-CON-12 (PenniLogic/contracts#16)",
+        "scope": "Binds each published error code to exactly one identifier here; adds no identifier without this procedure."
+      },
+      {
+        "owner": "T-AND-06",
+        "scope": "Adds resource-degraded identifiers for low storage and low memory."
+      },
+      {
+        "owner": "T-AND-07 (PenniLogic/android#57)",
+        "scope": "Publishes Android platform-capability and capture-health condition identifiers, each bound to exactly one state here. Its seven capture-health reason identifiers were published in 1.1.0 under capture_paused_by_platform and capture_blocked_by_setting; any further identifier follows this procedure."
+      },
+      {
+        "owner": "T-SEC-05",
+        "scope": "Names the cause class for operations denied by an adverse integrity verdict if the existing cause classes do not fit."
+      }
+    ]
+  }
+}

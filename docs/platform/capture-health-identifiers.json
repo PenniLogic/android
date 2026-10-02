@@ -4,8 +4,9 @@
   "purpose": "Android platform-capability and capture-health condition identifiers consumed by T-UX-01 and T-QA-12. Every identifier binds to exactly one state of the shared client state taxonomy; Android adds no state of its own.",
   "taxonomy": {
     "source": "PenniLogic/docs product/client-state-taxonomy.json (T-UX-01, PenniLogic/docs#1)",
-    "version": "1.0.0",
-    "source_commit": "6eb4da6",
+    "version": "1.1.0",
+    "source_commit": "a700e639585c61a4610e7b99dbd02b2dab28bdcc",
+    "source_metadata": "docs/platform/client-state-taxonomy/source.json",
     "signal_prefix": "client_state.",
     "states": [
       "empty",
