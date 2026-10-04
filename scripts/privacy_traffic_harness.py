@@ -11,7 +11,14 @@ from pathlib import Path
 
 from privacy_traffic.policy import ROOT, Policy
 from privacy_traffic.release import release_refusal
-from privacy_traffic.safety import Refusal, canonical, read_bytes, read_document
+from privacy_traffic.safety import Refusal, canonical, expected_run, read_bytes, read_document
+
+
+def run_id_argument(value: str) -> str:
+    try:
+        return expected_run(value)
+    except Refusal:
+        raise argparse.ArgumentTypeError("expected_run_id_required") from None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,13 +35,14 @@ def main(argv: list[str] | None = None) -> int:
     verify = commands.add_parser("verify-pack")
     verify.add_argument("pack", type=Path)
     verify.add_argument("--trusted-public-key", type=Path, required=True)
-    verify.add_argument("--run-id", required=True)
+    verify.add_argument("--run-id", required=True, type=run_id_argument)
     args = parser.parse_args(argv)
     try:
         if args.command == "self-test":
             suite = unittest.defaultTestLoader.discover(str(ROOT / "scripts" / "tests"), pattern="test_privacy_traffic*.py")
             result = unittest.TextTestRunner(verbosity=2).run(suite)
             module = sys.modules.get("test_privacy_traffic")
+            boundaries = sys.modules.get("test_privacy_traffic_boundaries")
             print(canonical({
                 "scope": "source_self_test",
                 "tests": result.testsRun,
@@ -42,6 +50,7 @@ def main(argv: list[str] | None = None) -> int:
                 "errors": len(result.errors),
                 "skipped": [{"test": test.id(), "reason": reason} for test, reason in result.skipped],
                 "capture_runs": getattr(module, "CAPTURE_RUNS", []),
+                "boundary_observations": getattr(boundaries, "BOUNDARY_OBSERVATIONS", []),
                 "release_qualified": False,
                 "approved_release_signer_present": False,
             }).decode("ascii"))

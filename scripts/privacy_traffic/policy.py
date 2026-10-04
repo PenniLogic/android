@@ -102,7 +102,7 @@ class Policy:
         exact_keys(
             data,
             {"schema_version", "required_journeys", "limits", "components", "destinations",
-             "network_schemas", "journey_providers", "local_events"},
+             "network_schemas", "journey_providers", "local_events", "diagnostic_hosts"},
             "invalid_policy",
         )
         require(type(data["schema_version"]) is int and data["schema_version"] == 1, "invalid_policy")
@@ -148,6 +148,12 @@ class Policy:
                         "unsafe_analytics_schema",
                     )
         require(type(data["destinations"]) is list and len(data["destinations"]) <= 32, "invalid_destination_registry")
+        require(
+            type(data["diagnostic_hosts"]) is list and len(data["diagnostic_hosts"]) <= 32
+            and all(safe_host(host) is not None for host in data["diagnostic_hosts"])
+            and data["diagnostic_hosts"] == sorted(set(data["diagnostic_hosts"])),
+            "invalid_host_metadata_registry",
+        )
         seen: set[tuple[str, str]] = set()
         for route in data["destinations"]:
             exact_keys(route, {"host", "component", "path", "schema", "journey", "synthetic"}, "invalid_route")
@@ -171,7 +177,17 @@ class Policy:
             )
             seen.add((route["host"], route["path"]))
         self.data = data
+        self._metadata_hosts = frozenset(
+            [*data["diagnostic_hosts"], *(route["host"] for route in data["destinations"])],
+        )
         self.sha256 = hashlib.sha256(canonical(data)).hexdigest()
+
+    def metadata_host(self, value: Any) -> str | None:
+        if type(value) is str and len(value) <= 253 and value.isascii():
+            candidate = value.lower()
+            if candidate in self._metadata_hosts:
+                return candidate
+        return None
 
     @classmethod
     def load(cls, path: Path = POLICY_PATH) -> Policy:

@@ -18,6 +18,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -57,6 +58,7 @@ class PrivacyTrafficPolicyTest {
         val fixture = networkFixture()
         policy.put("destinations", fixture.getJSONArray("destinations"))
         policy.put("network_schemas", fixture.getJSONObject("network_schemas"))
+        policy.put("diagnostic_hosts", fixture.getJSONArray("diagnostic_hosts"))
         for (variant in listOf("debug", "release")) {
             val original = policy.getJSONObject("components").getJSONArray(variant)
             val entries = (0 until original.length()).map { original.getString(it) } + fixture.getString("component")
@@ -178,6 +180,7 @@ class PrivacyTrafficPolicyTest {
     fun `scaffold publishes no analytics network or journey implementation`() {
         val document = source()
         assertEquals(0, document.getJSONArray("destinations").length())
+        assertEquals(0, document.getJSONArray("diagnostic_hosts").length())
         assertEquals(0, document.getJSONObject("network_schemas").length())
         assertEquals(0, document.getJSONObject("journey_providers").length())
         val refusal =
@@ -187,6 +190,44 @@ class PrivacyTrafficPolicyTest {
                     .requireNetworkPayload("analytics.synthetic.invalid", "/probe/analytics", probe().toString())
             }
         assertEquals("undeclared_route", refusal.code)
+    }
+
+    @Test
+    fun `DNS grammar cannot authorize retained host metadata`() {
+        val policy = syntheticPolicy()
+        assertEquals("unlisted.synthetic.invalid", policy.metadataHost("UNLISTED.SYNTHETIC.INVALID"))
+        assertEquals("analytics.synthetic.invalid", policy.metadataHost("analytics.synthetic.invalid"))
+        assertNull(policy.metadataHost("private-synthetic-identifier.synthetic.invalid"))
+        assertNull(policy.metadataHost("https://unlisted.synthetic.invalid/private"))
+        assertNull(policy.metadataHost("unlisted%2esynthetic.invalid"))
+        assertNull(PrivacyTrafficPolicy.fromResources(context.resources).metadataHost("unlisted.synthetic.invalid"))
+        val digest =
+            MessageDigest
+                .getInstance("SHA-256")
+                .digest("SYNTHETIC_RAW_MESSAGE_DO_NOT_EGRESS_ANDROID_16".toByteArray())
+                .joinToString("") { "%02x".format(it) }
+        val host = "${digest.take(32)}.${digest.drop(32)}.synthetic.invalid"
+        assertTrue("raw-derived host metadata must be withheld", policy.metadataHost(host) == null)
+    }
+
+    @Test
+    fun `diagnostic metadata policy cannot admit URLs or aliases and never grants a network route`() {
+        val policy = syntheticPolicy()
+        val refused =
+            assertThrows(PrivacyPayloadRefused::class.java) {
+                policy.requireNetworkPayload("unlisted.synthetic.invalid", "/probe/analytics", probe().toString())
+            }
+        assertEquals("undeclared_route", refused.code)
+        for (host in listOf(
+            "https://synthetic.invalid/private",
+            "synthetic@synthetic.invalid",
+            "*.synthetic.invalid",
+        )) {
+            val malformed = source().put("diagnostic_hosts", JSONArray(listOf(host)))
+            assertThrows(PrivacyPayloadRefused::class.java) {
+                PrivacyTrafficPolicy.fromBytes(malformed.toString().toByteArray())
+            }
+        }
     }
 
     @Test

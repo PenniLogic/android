@@ -6,11 +6,10 @@ import importlib.metadata
 import select
 import socket
 import ssl
-import time
 from datetime import datetime, timedelta, timezone
 from typing import Callable, TypeVar
 
-from .safety import Refusal, require, safe_host
+from .safety import Refusal, remaining_seconds, require, safe_host
 
 
 T = TypeVar("T")
@@ -112,10 +111,11 @@ class MemoryTLS:
         from OpenSSL import SSL
 
         while True:
-            remaining = self.deadline - time.monotonic()
-            require(remaining > 0, "capture_timeout")
+            remaining = remaining_seconds(self.deadline)
             try:
-                return action()
+                result = action()
+                remaining_seconds(self.deadline)
+                return result
             except SSL.WantReadError:
                 select.select([self.socket], [], [], remaining)
             except SSL.WantWriteError:

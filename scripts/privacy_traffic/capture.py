@@ -58,20 +58,25 @@ class Inspector:
         self.forwarded = 0
         self.tls_interceptions = 0
         self.hosts: Counter[str] = Counter()
+        self.hosts_withheld = 0
         self.fields: dict[str, set[str]] = {}
         self.synthetic_paths: set[str] = set()
         self.violations: Counter[tuple[str, str | None]] = Counter()
         digest = hashlib.sha256(SENTINEL.encode("ascii")).digest()
         self._derivatives = (digest.hex(), digest.hex().upper(), base64.b64encode(digest).decode("ascii"))
 
+    @property
+    def deadline(self) -> float:
+        return self.started + LIMITS["run_timeout_seconds"]
+
     def budget(self, size: int = 0) -> None:
-        require(time.monotonic() - self.started <= LIMITS["run_timeout_seconds"], "capture_timeout")
+        require(time.monotonic() < self.deadline, "capture_timeout")
         self.bytes_seen += size
         require(self.bytes_seen <= LIMITS["max_capture_bytes"], "capture_budget_exceeded")
 
     def refuse(self, code: str, host: str | None = None) -> None:
         require(code in VIOLATIONS, "unclassified_capture_failure")
-        self.violations[(code, safe_host(host) if host is not None else None)] += 1
+        self.violations[(code, self.policy.metadata_host(host))] += 1
 
     def connection(self) -> None:
         self.budget()
@@ -85,8 +90,13 @@ class Inspector:
 
     def admit_host(self, host: str, *, inventory: bool = False) -> None:
         self.budget()
-        if inventory and safe_host(host) is not None:
-            self.hosts[host] += 1
+        if inventory:
+            metadata = self.policy.metadata_host(host)
+            if metadata is None:
+                self.hosts_withheld += 1
+            else:
+                self.hosts[metadata] += 1
+        self.scan([host])
         require(
             safe_host(host) is not None and any(route["host"] == host for route in self.policy.data["destinations"]),
             "unknown_destination",
@@ -136,6 +146,11 @@ class Inspector:
             type(retention_seconds) is int and 0 < retention_seconds <= LIMITS["max_retention_seconds"],
             "retention_refused",
         )
+        require(
+            all(self.policy.metadata_host(host) == host for host in self.hosts)
+            and all(host is None or self.policy.metadata_host(host) == host for _, host in self.violations),
+            "untrusted_host_metadata",
+        )
         violations = [
             {"code": code, "host": host, "count": count}
             for (code, host), count in sorted(self.violations.items(), key=lambda item: (item[0][0], item[0][1] or ""))
@@ -153,6 +168,7 @@ class Inspector:
             "tls_interceptions": self.tls_interceptions,
             "capture_bytes": self.bytes_seen,
             "hosts": [{"host": host, "count": count} for host, count in sorted(self.hosts.items())],
+            "hosts_withheld": self.hosts_withheld,
             "payload_fields": {schema: sorted(fields) for schema, fields in sorted(self.fields.items())},
             "violation_count": sum(self.violations.values()),
             "violations": violations,

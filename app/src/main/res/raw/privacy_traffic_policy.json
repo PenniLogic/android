@@ -275,6 +275,7 @@
     ]
   },
   "destinations": [],
+  "diagnostic_hosts": [],
   "network_schemas": {},
   "journey_providers": {},
   "local_events": {
@@ -284,7 +285,7 @@
         "event": {"kind": "enum", "values": ["privacy_payload_refused"], "nullable": false},
         "code": {
           "kind": "enum",
-          "values": ["malformed_document", "duplicate_json_key", "document_size_refused", "document_complexity_refused", "document_object_required", "numeric_value_refused", "non_finite_json", "invalid_policy", "required_journey_drift", "capture_budget_drift", "invalid_component_registry", "payload_schema_overlap", "payload_category_drift", "analytics_route_drift", "invalid_payload_schema", "invalid_field_rule", "invalid_journey_provider", "invalid_destination_registry", "invalid_route", "duplicate_route", "device_only_schema_refused", "unsafe_analytics_schema", "undeclared_payload_schema", "undeclared_payload_field", "payload_value_refused", "undeclared_route", "device_only_artifact_egress", "source_event_origin_unverified", "monetary_analytics"],
+          "values": ["malformed_document", "duplicate_json_key", "document_size_refused", "document_complexity_refused", "document_object_required", "numeric_value_refused", "non_finite_json", "invalid_policy", "required_journey_drift", "capture_budget_drift", "invalid_component_registry", "payload_schema_overlap", "payload_category_drift", "analytics_route_drift", "invalid_payload_schema", "invalid_field_rule", "invalid_journey_provider", "invalid_destination_registry", "invalid_host_metadata_registry", "invalid_route", "duplicate_route", "device_only_schema_refused", "unsafe_analytics_schema", "undeclared_payload_schema", "undeclared_payload_field", "payload_value_refused", "undeclared_route", "device_only_artifact_egress", "source_event_origin_unverified", "monetary_analytics"],
           "nullable": false
         }
       }

@@ -349,7 +349,7 @@ class PrivacyPolicyTest(unittest.TestCase):
             ("truncated", b"POST / HTTP/1.1\r\nContent-Length: 2\r\n\r\n"),
         ):
             with self.subTest(case=name), self.assertRaises(Refusal):
-                read_http(ByteChannel(raw))
+                read_http(ByteChannel(raw), deadline=time.monotonic() + 2)
 
 
 class PrivacyEvidenceTest(unittest.TestCase):
@@ -382,7 +382,7 @@ class PrivacyEvidenceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="privacy-scrub-") as temporary:
             store = EvidenceStore(Path(temporary) / "owned", owner_id=uuid.uuid4().hex, create=True)
             self.refused(lambda: store.write(report, self.policy, now=int(time.time())), "unscrubbed_evidence")
-            self.assertEqual(["privacy-store.json"], sorted(path.name for path in store.root.iterdir()))
+            self.assertEqual(["privacy-store.json", "privacy-store.lock"], sorted(path.name for path in store.root.iterdir()))
 
     def test_stale_future_unbounded_retention_and_false_journey_evidence_are_refused(self):
         now = int(time.time())

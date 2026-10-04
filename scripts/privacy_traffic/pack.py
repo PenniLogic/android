@@ -10,7 +10,7 @@ from typing import Any
 
 from .evidence import validate_report
 from .policy import Policy
-from .safety import Refusal, canonical, document, exact_keys, require
+from .safety import Refusal, canonical, document, exact_keys, expected_run, require
 from .tls import check_runtime
 
 
@@ -46,6 +46,7 @@ def verify_pack(
     raw: bytes, policy: Policy, *, trusted_public_key: bytes, now: int,
     expected_run_id: str,
 ) -> dict[str, Any]:
+    expected_run(expected_run_id)
     check_runtime()
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey

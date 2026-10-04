@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import stat
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,17 @@ class Refusal(ValueError):
 def require(condition: bool, code: str) -> None:
     if not condition:
         raise Refusal(code)
+
+def expected_run(value: Any) -> str:
+    require(type(value) is str and RUN_ID.fullmatch(value) is not None, "expected_run_id_required")
+    return value
+
+
+def remaining_seconds(deadline: float) -> float:
+    require(type(deadline) in (int, float) and math.isfinite(deadline), "invalid_capture_deadline")
+    remaining = deadline - time.monotonic()
+    require(remaining > 0, "capture_timeout")
+    return remaining
 
 
 def canonical(value: Any) -> bytes:
@@ -124,6 +137,7 @@ def read_document(path: Path, *, limit: int = MAX_DOCUMENT_BYTES) -> dict[str, A
 
 
 def safe_host(value: str) -> str | None:
+    """DNS grammar only; persisted host metadata must also be source-declared."""
     if type(value) is not str or not DNS_NAME.fullmatch(value):
         return None
     return value

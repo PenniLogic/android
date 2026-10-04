@@ -27,10 +27,11 @@ SCENARIOS = (
 def synthetic_policy() -> Policy:
     base = Policy.load()
     fixture = read_document(FIXTURE)
-    exact_keys(fixture, {"component", "destinations", "network_schemas"}, "invalid_synthetic_fixture")
+    exact_keys(fixture, {"component", "destinations", "network_schemas", "diagnostic_hosts"}, "invalid_synthetic_fixture")
     data = copy.deepcopy(base.data)
     data["destinations"] = fixture["destinations"]
     data["network_schemas"] = fixture["network_schemas"]
+    data["diagnostic_hosts"] = fixture["diagnostic_hosts"]
     for variant in ("debug", "release"):
         data["components"][variant] = sorted([*data["components"][variant], fixture["component"]])
     return Policy(data)

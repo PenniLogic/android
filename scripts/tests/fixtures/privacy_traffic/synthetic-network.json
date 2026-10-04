@@ -1,5 +1,6 @@
 {
   "component": "pennilogic.synthetic:traffic-probe:1",
+  "diagnostic_hosts": ["unlisted.synthetic.invalid"],
   "destinations": [
     {"host": "analytics.synthetic.invalid", "component": "pennilogic.synthetic:traffic-probe:1", "path": "/probe/ingestion", "schema": "synthetic_probe", "journey": "ingestion", "synthetic": true},
     {"host": "analytics.synthetic.invalid", "component": "pennilogic.synthetic:traffic-probe:1", "path": "/probe/clarification", "schema": "synthetic_probe", "journey": "clarification", "synthetic": true},

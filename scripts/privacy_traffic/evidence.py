@@ -6,30 +6,41 @@ import ctypes
 import os
 import re
 import stat
+import uuid
+from contextlib import contextmanager
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from .capture import VIOLATIONS
+from .file_lock import exclusive_file
 from .policy import JOURNEYS, LIMITS, Policy
 from .safety import (
     MAX_DOCUMENT_BYTES, MAX_RETENTION_SECONDS, RUN_ID, SHA256, Refusal, canonical, exact_keys,
-    physical, read_document, require, safe_host,
+    document, expected_run, physical, read_document, require,
 )
 
 
 REPORT_KEYS = {
     "format", "kind", "run_id", "policy_sha256", "created_at", "expires_at",
     "request_count", "connection_count", "forwarded_count", "tls_interceptions", "capture_bytes",
-    "hosts", "payload_fields", "violation_count", "violations", "observed_synthetic_paths",
+    "hosts", "hosts_withheld", "payload_fields", "violation_count", "violations", "observed_synthetic_paths",
     "observed_journeys", "unmet_required_journeys", "release_qualified",
 }
 FILE_NAME = re.compile(r"privacy-evidence-([0-9a-f]{32})\.json", re.ASCII)
+STORE_MARKER = "privacy-store.json"
+STORE_LOCK = "privacy-store.lock"
+
+class _RunBinding(Enum):
+    OMITTED = 0
 
 
 def validate_report(
     report: dict[str, Any], policy: Policy, *, now: int,
-    expected_run_id: str | None = None, allow_expired: bool = False,
+    expected_run_id: str | _RunBinding = _RunBinding.OMITTED, allow_expired: bool = False,
 ) -> bytes:
+    if expected_run_id is not _RunBinding.OMITTED:
+        expected_run(expected_run_id)
     exact_keys(report, REPORT_KEYS, "unscrubbed_evidence")
     require(
         report["format"] == "pennilogic_privacy_evidence_v1" and report["kind"] == "source_synthetic"
@@ -42,7 +53,7 @@ def validate_report(
         and report["policy_sha256"] == policy.sha256,
         "policy_evidence_drift",
     )
-    if expected_run_id is not None:
+    if expected_run_id is not _RunBinding.OMITTED:
         require(report["run_id"] == expected_run_id, "run_evidence_drift")
     created, expires = report["created_at"], report["expires_at"]
     require(
@@ -70,13 +81,17 @@ def validate_report(
     for item in report["hosts"]:
         exact_keys(item, {"host", "count"}, "unscrubbed_evidence")
         require(
-            safe_host(item["host"]) is not None and item["host"].endswith(".synthetic.invalid")
+            type(item["host"]) is str and policy.metadata_host(item["host"]) == item["host"]
             and type(item["count"]) is int and 0 < item["count"] <= LIMITS["max_requests"],
-            "unscrubbed_evidence",
+            "untrusted_host_metadata",
         )
         hosts.append(item["host"])
         total_hosts += item["count"]
-    require(hosts == sorted(set(hosts)) and total_hosts <= report["connection_count"], "invalid_evidence_counts")
+    require(
+        type(report["hosts_withheld"]) is int and 0 <= report["hosts_withheld"] <= report["connection_count"]
+        and hosts == sorted(set(hosts)) and total_hosts + report["hosts_withheld"] <= report["connection_count"],
+        "invalid_evidence_counts",
+    )
     require(type(report["payload_fields"]) is dict, "unscrubbed_evidence")
     for schema, fields in report["payload_fields"].items():
         require(type(schema) is str and schema in policy.data["network_schemas"], "unscrubbed_evidence")
@@ -90,17 +105,21 @@ def validate_report(
         exact_keys(violation, {"code", "host", "count"}, "unscrubbed_evidence")
         require(
             type(violation["code"]) is str and violation["code"] in VIOLATIONS
-            and (violation["host"] is None or safe_host(violation["host"]) is not None
-                 and violation["host"].endswith(".synthetic.invalid"))
             and type(violation["count"]) is int and 0 < violation["count"] <= LIMITS["max_requests"] + 1,
             "unscrubbed_evidence",
+        )
+        require(
+            violation["host"] is None or type(violation["host"]) is str
+            and policy.metadata_host(violation["host"]) == violation["host"],
+            "untrusted_host_metadata",
         )
         count += violation["count"]
     require(count == report["violation_count"], "invalid_evidence_counts")
     if not count:
         require(
             report["connection_count"] == report["tls_interceptions"] == report["request_count"] == report["forwarded_count"]
-            and total_hosts == report["connection_count"] and bool(report["payload_fields"]),
+            and total_hosts == report["connection_count"] and report["hosts_withheld"] == 0
+            and bool(report["payload_fields"]),
             "incomplete_capture_evidence",
         )
     require(
@@ -244,27 +263,76 @@ class EvidenceStore:
         require(type(owner_id) is str and RUN_ID.fullmatch(owner_id) is not None, "store_owner_required")
         self.root = physical(root)
         self.owner_id = owner_id
+        self._binding: dict[str, Any] | None = None
         try:
             if create and not self.root.exists():
                 self.root.mkdir(mode=0o700)
                 if os.name == "nt":
                     _windows_private(self.root, protect_new=True)
             private_path(self.root, directory=True)
-            marker = self.root / "privacy-store.json"
+            marker = self.root / STORE_MARKER
             if create:
                 require(not any(self.root.iterdir()), "store_not_empty")
-                self._exclusive_write(marker, canonical({"format": "privacy_store_v1", "owner_id": owner_id}))
+                lock_id = uuid.uuid4().hex
+                lock_path = self.root / STORE_LOCK
+                self._exclusive_write(lock_path, canonical({
+                    "format": "privacy_store_lock_v1", "owner_id": owner_id, "lock_id": lock_id,
+                }))
+                identity = lock_path.stat()
+                self._exclusive_write(marker, canonical({
+                    "format": "privacy_store_v2", "owner_id": owner_id, "lock_id": lock_id,
+                    "lock_device": identity.st_dev, "lock_inode": identity.st_ino,
+                }))
             self._check_owner()
         except OSError:
             raise Refusal("store_initialization_failed") from None
 
     def _check_owner(self) -> None:
-        marker = self.root / "privacy-store.json"
+        marker = self.root / STORE_MARKER
         private_path(marker, directory=False)
+        binding = read_document(marker)
+        exact_keys(
+            binding, {"format", "owner_id", "lock_id", "lock_device", "lock_inode"}, "store_owner_mismatch",
+        )
         require(
-            read_document(marker) == {"format": "privacy_store_v1", "owner_id": self.owner_id},
+            binding["format"] == "privacy_store_v2" and binding["owner_id"] == self.owner_id
+            and type(binding["lock_id"]) is str and RUN_ID.fullmatch(binding["lock_id"]) is not None
+            and type(binding["lock_device"]) is int and binding["lock_device"] >= 0
+            and type(binding["lock_inode"]) is int and binding["lock_inode"] > 0
+            and (self._binding is None or binding == self._binding),
             "store_owner_mismatch",
         )
+        private_path(self.root / STORE_LOCK, directory=False)
+        identity = (self.root / STORE_LOCK).stat()
+        require(
+            (identity.st_dev, identity.st_ino) == (binding["lock_device"], binding["lock_inode"]),
+            "store_lock_identity_drift",
+        )
+        self._binding = binding
+
+    @contextmanager
+    def _locked(self) -> Iterator[None]:
+        private_path(self.root, directory=True)
+        self._check_owner()
+        with exclusive_file(self.root / STORE_LOCK) as stream:
+            private_path(self.root, directory=True)
+            self._check_owner()
+            binding = self._binding
+            require(binding is not None, "store_owner_mismatch")
+            opened = os.fstat(stream.fileno())
+            require(
+                stat.S_ISREG(opened.st_mode) and opened.st_nlink == 1
+                and (opened.st_dev, opened.st_ino) == (binding["lock_device"], binding["lock_inode"]),
+                "store_lock_identity_drift",
+            )
+            require(
+                document(stream.read(1025), limit=1024) == {
+                    "format": "privacy_store_lock_v1", "owner_id": self.owner_id, "lock_id": binding["lock_id"],
+                },
+                "store_lock_binding_drift",
+            )
+            yield
+            self._check_owner()
 
     def _exclusive_write(self, path: Path, raw: bytes) -> None:
         physical(path)
@@ -285,25 +353,27 @@ class EvidenceStore:
 
     def write(self, report: dict[str, Any], policy: Policy, *, now: int) -> Path:
         raw = validate_report(report, policy, now=now)
-        private_path(self.root, directory=True)
-        self._check_owner()
-        self.purge_expired(policy, now=now)
-        require(sum(1 for path in self.root.iterdir() if FILE_NAME.fullmatch(path.name)) < 64, "store_capacity_refused")
-        path = self.root / f"privacy-evidence-{report['run_id']}.json"
-        try:
-            self._exclusive_write(path, raw)
-        except FileExistsError:
-            raise Refusal("evidence_overwrite_refused") from None
-        except OSError:
-            raise Refusal("evidence_write_failed") from None
+        run_id = document(raw)["run_id"]
+        with self._locked():
+            self._purge_expired(policy, now=now)
+            require(sum(1 for path in self.root.iterdir() if FILE_NAME.fullmatch(path.name)) < 64, "store_capacity_refused")
+            path = self.root / f"privacy-evidence-{run_id}.json"
+            try:
+                self._exclusive_write(path, raw)
+            except FileExistsError:
+                raise Refusal("evidence_overwrite_refused") from None
+            except OSError:
+                raise Refusal("evidence_write_failed") from None
         return path
 
     def purge_expired(self, policy: Policy, *, now: int) -> int:
-        private_path(self.root, directory=True)
-        self._check_owner()
+        with self._locked():
+            return self._purge_expired(policy, now=now)
+
+    def _purge_expired(self, policy: Policy, *, now: int) -> int:
         candidates: list[Path] = []
         for path in self.root.iterdir():
-            if path.name == "privacy-store.json":
+            if path.name in (STORE_MARKER, STORE_LOCK):
                 continue
             match = FILE_NAME.fullmatch(path.name)
             require(match is not None, "store_foreign_entry")

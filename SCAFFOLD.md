@@ -384,6 +384,11 @@ Synthetic routes are never claimed as product journey coverage. See
 [`docs/privacy/traffic-inspection.md`](docs/privacy/traffic-inspection.md) for the exact commands,
 bounded capture/storage/signature primitives, original eight-criterion/five-DoD mapping and
 the still-unmet canonical runner, native CI and RC acceptance requirements.
+Retained host names require exact source-policy membership, not only DNS syntax;
+withheld names keep a violation/count. Capture uses one absolute 20-second
+deadline, evidence admission is interprocess-serialized at 64 files, and signature
+verification requires a valid out-of-band run context. The original f39 source
+review remains FAIL pending a separate exact-head review of these corrections.
 
 - Process start logs one structured `Log.i` event with tag `PenniLogic`:
   `{"event":"app_start","build_type":…,"version_name":…,"version_code":…,"configuration":"loaded"|"invalid","problems":[…]}`.

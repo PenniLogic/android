@@ -21,6 +21,18 @@ class PrivacyTrafficPolicy private constructor(
     private val document: JSONObject,
     val sha256: String,
 ) {
+    private val metadataHosts: Set<String> =
+        strings(document.getJSONArray("diagnostic_hosts")).toSet() +
+            document.getJSONArray("destinations").let { routes ->
+                (0 until routes.length()).map { routes.getJSONObject(it).getString("host") }
+            }
+
+    fun metadataHost(host: String): String? {
+        if (host.length > 253 || host.any { it.code >= 128 }) return null
+        val candidate = host.lowercase()
+        return candidate.takeIf { it in metadataHosts }
+    }
+
     fun requireLocalPayload(json: String) {
         val payload = parse(json)
         val name = payload.opt("event") as? String ?: throw PrivacyPayloadRefused("undeclared_payload_schema")
@@ -139,6 +151,7 @@ class PrivacyTrafficPolicy private constructor(
                 "limits",
                 "components",
                 "destinations",
+                "diagnostic_hosts",
                 "network_schemas",
                 "journey_providers",
                 "local_events",
@@ -334,6 +347,12 @@ class PrivacyTrafficPolicy private constructor(
             )
             val destinations = document.getJSONArray("destinations")
             refuseUnless(destinations.length() <= 32, "invalid_destination_registry")
+            val diagnosticHosts = strings(document.getJSONArray("diagnostic_hosts"))
+            refuseUnless(
+                diagnosticHosts.size <= 32 && diagnosticHosts == diagnosticHosts.distinct().sorted() &&
+                    diagnosticHosts.all { HOST.matches(it) },
+                "invalid_host_metadata_registry",
+            )
             val routes = mutableSetOf<Pair<String, String>>()
             for (index in 0 until destinations.length()) {
                 val route = destinations.getJSONObject(index)

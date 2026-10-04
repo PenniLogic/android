@@ -16,7 +16,7 @@ declared `privacy_payload_refused` event and fixed code. Native tests compare th
 packaged bytes with the harness source and run the actual producers against it.
 This is instrumentation binding, not an analytics implementation.
 
-The scaffold has **no network destinations, analytics transport or ingestion,
+The scaffold has **no network destinations, diagnostic host names, analytics transport or ingestion,
 clarification or analytics journey providers**. Those registries are deliberately
 empty, not wildcard allowlists. `run-rc` returns exit **2**, naming each missing
 provider. Source probes always report `observed_journeys: []`, all three real
@@ -125,12 +125,32 @@ oversized body is refused before reading it. Duplicate headers/JSON keys,
 compression, transfer encoding, opaque data, malformed/truncated traffic,
 unexpected headers, stale run binding, upstream failures and unknown outcomes
 are explicit failures. Empty traffic is never evidence of success.
+The same absolute monotonic deadline reaches every plain/TLS header/body receive,
+send, handshake, upstream connection and idle listener. Native socket waits are
+clamped to the remaining budget; completion is checked again after a read/write.
+Continuing sub-two-second activity cannot restart the 20-second deadline.
+Timeouts close the owned connection and stop its listener; teardown still
+requires joined threads. The real slow-CONNECT test uses the full 20 seconds,
+not a reduced budget or only an injected clock.
 
 Requests are asserted before forwarding. The raw synthetic sentinel, JSON-escaped
 text, headers/URLs, derived sentinel digest, monetary fields or numeric analytics
 values, unknown destinations and schema/allowlist drift are planted negatives.
-Unknown destinations are named only as a validated host, never a URL, user info,
-query, header or body. Undeclared field names and their values are not echoed.
+DNS grammar alone never establishes safe metadata or non-raw origin. Names are
+retained only on exact membership in the immutable source policy's destination
+names or its separate `diagnostic_hosts` metadata list. Diagnostic membership
+does **not** grant network permission. The packaged scaffold list is empty; the
+source fixture names only the ordinary `unlisted.synthetic.invalid` negative.
+Case normalization can return that same declared constant, never an arbitrary
+request spelling. Unknown opaque names, private identifiers, delimiter/case/
+escape/disguised digests, URLs and user info are withheld before inventory or
+violation insertion. `hosts_withheld` records their count and the violation
+keeps its fixed code/count with `host: null`; no real violation is dropped.
+Strict report/storage/signature validation repeats that source-membership check.
+There is no digest-detection heuristic or auto-enrollment of observed hosts.
+Any future real RC host naming still needs reviewed source-bound inventory and
+provenance; the original full unknown-host criterion remains unaccepted here.
+Undeclared field names and their values are not echoed.
 
 ACCEPTED ADR-018 at Docs commit `3e4afcb9575badf8669a50136da69fcc6f634500`
 requires `*_bidx`, `raw_event_digest`, `raw_hash`, `message_digest` and other
@@ -143,7 +163,7 @@ ingestion feature or analytics feature is introduced.
 
 ## Evidence, signatures and retention
 
-Only host inventories, allowed payload-field inventories, violation codes/counts,
+Only source-declared host inventories, withheld-host counts, allowed payload-field inventories, violation codes/counts,
 capture counters, policy identity and run/expiry metadata survive assertion.
 Request/response values, bodies, URLs, headers and their raw-derived hashes are
 never written. Strict document validation runs before output. Invented real
@@ -165,7 +185,21 @@ Existing evidence, mismatched ownership, aliases, junctions and foreign entries
 are refused. Reopening needs the same store ID; it is custody metadata, not
 identity attestation. Retention is positive and at most 24 hours (default one
 hour); at most 64 evidence files are retained. Writes purge expired owned
-evidence first. Purging validates the complete named set before deleting only
+evidence first. A stable, private, single-link `privacy-store.lock` is bound by
+device/inode and random lock ID to the `privacy_store_v2` custody marker.
+Purge, capacity admission and exclusive evidence creation share one
+interprocess kernel lock: Windows no-share `OPEN_EXISTING` with no reparse
+following, or POSIX `flock`. Contention has a five-second bounded refusal,
+not a stale-PID lease or a configurable capacity. Handles are non-inheritable;
+exception and process crash release them without deleting/replacing the lock.
+Unknown, public, hardlinked, missing, replaced or mismatched locks are refused.
+The actual two-process 63-to-64 interleaving admits one writer and refuses the
+other; real crash/recovery and exact 64/65 boundary controls also execute.
+No OS setting, privilege or shared service is changed. Older v1 markers are
+refused unchanged, never silently repaired or migrated; create a new owned store.
+The filename comes from the validated immutable report snapshot, not mutable
+caller data changed during lock admission.
+Purging validates the complete named set before deleting only
 expired leaves; siblings and unknown files are preserved. A runner must also
 schedule expiry cleanup and bound published artifact retention to one day;
 local expiry checks alone do not prove remote deletion.
@@ -173,7 +207,12 @@ local expiry checks alone do not prove remote deletion.
 `pack.sign_pack` implements a domain-separated Ed25519 signature over the exact
 canonical, scrubbed report. Verification requires a caller-supplied trusted
 32-byte public key and out-of-band expected run ID, not an issuer claimed inside
-the pack. The actual crypto tests cover tampering, wrong keys, wrong domains,
+the pack. `verify_pack` requires a non-empty, exact lowercase 32-hex context
+before runtime checks, parsing or cryptography. `None`, booleans, bytes, collections
+and malformed strings cannot select unbound verification. The report validator
+can omit a context only for newly built source evidence; an explicit invalid
+context is refused there too. The CLI keeps a required typed `--run-id` and
+echo-safe fixed errors. The actual crypto tests cover tampering, wrong keys, wrong domains,
 missing signer, malformed pack and stale evidence. Only test keys are generated,
 in memory; no private signing key is persisted or accepted as a CLI argument.
 
@@ -213,6 +252,33 @@ No key for the old Governance App is requested, no token/workflow permission is
 widened and no custom CheckRun or fabricated approval replaces the native job.
 Independent non-author Core, affected-risk and QA review, native CI, current-base
 PR-only integration, resolved threads and empty bypass remain required.
+The independent f39/e6 **FAIL** and its four finding receipts remain immutable.
+Author correction/regression results do not relabel them or constitute a new
+independent positive review. Root must bind the retained Core/risk and QA review
+contexts to the corrected exact head.
+
+This correction changes only the Android source interface: the packaged policy
+adds `diagnostic_hosts`, source reports add mandatory `hosts_withheld`, private
+stores use v2 lock custody, `read_http` requires an absolute deadline, and pack/
+explicit report verification rejects invalid context. CLI commands and runtime
+pins, native component lists, quality commands and fixed budgets are unchanged.
+These new source hashes/schema fields require Root's later serial canonical
+review/adoption. Frozen Infra A/B and all generated consumers remain untouched.
+
+## Four source-finding regression bindings
+
+The tests in `scripts/tests/test_privacy_traffic_boundaries.py` use actual owned
+loopback sockets, private persistence, Ed25519 and native kernel/process paths:
+
+| Finding | Named regression and additional boundary controls |
+| --- | --- |
+| F1 - encoded host data retained | `test_encoded_raw_derived_hostname_is_scrubbed_before_private_persistence_and_signing`; case/delimiter/escape/private-ID variants; direct report/store/real signed-payload revalidation; declared unknown-host naming without network permission |
+| F2 - resetting CONNECT inactivity wait | `test_connect_absolute_capture_deadline_with_real_continuing_activity`; full real 20-second stream, timeout/listener exit and joined helpers; late completion and already-expired deadline refusal |
+| F3 - missing expected run disables binding | `test_missing_expected_run_id_cannot_disable_real_signature_binding`; before-runtime/parse invalid-type controls; valid/wrong/expired real packs and actual CLI missing/empty/malformed/wrong/valid context |
+| F4 - capacity race | `test_two_real_store_processes_cannot_admit_65_files`; two actual spawned writers at 63 files; exact 64/65 boundary, exception/crash/busy recovery, private marker/lock/link/replacement/legacy refusals and immutable admission snapshot |
+
+Native tests exercise the same packaged metadata policy, source-only fixture
+and default-deny network boundary, in addition to all original producer tests.
 
 ## Original acceptance and Definition of Done mapping
 
