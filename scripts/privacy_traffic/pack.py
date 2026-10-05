@@ -26,11 +26,12 @@ def sign_pack(
     require(signer is not None, "evidence_signer_missing")
     require(type(public_key) is bytes and len(public_key) == 32, "signer_key_refused")
     payload = validate_report(report, policy, now=now)
+    snapshot = document(payload)
     signature = signer(DOMAIN + payload)
     require(type(signature) is bytes and len(signature) == 64, "signer_result_refused")
     raw = canonical({
         "format": "pennilogic_privacy_signed_pack_v1",
-        "payload": report,
+        "payload": snapshot,
         "signature": {
             "algorithm": "ed25519",
             "key_sha256": hashlib.sha256(public_key).hexdigest(),
@@ -38,7 +39,7 @@ def sign_pack(
         },
     })
     require(len(raw) <= PACK_LIMIT, "document_size_refused")
-    verify_pack(raw, policy, trusted_public_key=public_key, now=now, expected_run_id=report["run_id"])
+    verify_pack(raw, policy, trusted_public_key=public_key, now=now, expected_run_id=snapshot["run_id"])
     return raw
 
 
@@ -73,4 +74,4 @@ def verify_pack(
         Ed25519PublicKey.from_public_bytes(trusted_public_key).verify(value, DOMAIN + payload)
     except InvalidSignature:
         raise Refusal("invalid_signature") from None
-    return pack["payload"]
+    return document(payload)

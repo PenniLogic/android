@@ -12,7 +12,7 @@ from .capture import SENTINEL, Inspector
 from .evidence import validate_report
 from .policy import JOURNEYS, ROOT, Policy
 from .proxy import InterceptProxy, SyntheticOrigin, synthetic_request
-from .safety import canonical, exact_keys, read_document, require
+from .safety import canonical, document, exact_keys, read_document, require
 from .tls import MemoryCA
 
 
@@ -86,7 +86,7 @@ def run_probe(scenario: str) -> dict[str, Any]:
                 ))
         require(not proxy.failures and not origin.failures, "synthetic_service_failed")
     report = inspector.report(now=int(time.time()))
-    validate_report(report, policy, now=int(time.time()), expected_run_id=inspector.run_id)
+    report = document(validate_report(report, policy, now=int(time.time()), expected_run_id=inspector.run_id))
     missing = sorted(set(JOURNEYS) - inspector.synthetic_paths)
     source_passed = (
         not report["violation_count"] and not missing and responses == [200, 200, 200]

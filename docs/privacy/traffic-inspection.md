@@ -199,6 +199,21 @@ No OS setting, privilege or shared service is changed. Older v1 markers are
 refused unchanged, never silently repaired or migrated; create a new owned store.
 The filename comes from the validated immutable report snapshot, not mutable
 caller data changed during lock admission.
+That snapshot is now captured **before any report schema check**: only bounded
+built-in JSON values are recursively copied into privately owned containers,
+with the existing byte/node/depth limits enforced during capture. Unsupported
+types, non-finite numbers, excessive inputs and structural mutation have fixed,
+echo-safe refusals; there is no custom converter, shared nested copy or fallback.
+The snapshot becomes immutable canonical bytes before validation. Every report
+check reads a private parse of those bytes, and the exact same bytes are returned
+for persistence; run ID, filename and expiry facts come from that copy.
+Concurrent changes can produce only a closed bounded snapshot that passes every
+check or a refusal, not an unvalidated artifact. This is not an atomic transaction
+over arbitrary caller-owned graphs or a hostile same-owner-code sandbox.
+Storage, source probe output and signing/verification consume the validated copy,
+never another serialization of the mutable original. Signing binds its payload,
+run context and signature to the same bytes even if the caller changes while the
+signer runs. Normal validation/signing never mutates the caller.
 Purging validates the complete named set before deleting only
 expired leaves; siblings and unknown files are preserved. A runner must also
 schedule expiry cleanup and bound published artifact retention to one day;
@@ -252,10 +267,12 @@ No key for the old Governance App is requested, no token/workflow permission is
 widened and no custom CheckRun or fabricated approval replaces the native job.
 Independent non-author Core, affected-risk and QA review, native CI, current-base
 PR-only integration, resolved threads and empty bypass remain required.
-The independent f39/e6 **FAIL** and its four finding receipts remain immutable.
+The independent f39/e6 and e669/e6 **FAIL** records remain immutable.
 Author correction/regression results do not relabel them or constitute a new
 independent positive review. Root must bind the retained Core/risk and QA review
-contexts to the corrected exact head.
+contexts to the corrected exact head. The separately scoped finite QA PASS
+without the N1 case does not override the e669 Core FAIL. N1's validation-before-
+serialization gap also existed in f39; it is not described as introduced by e669.
 
 This correction changes only the Android source interface: the packaged policy
 adds `diagnostic_hosts`, source reports add mandatory `hosts_withheld`, private
@@ -276,6 +293,20 @@ loopback sockets, private persistence, Ed25519 and native kernel/process paths:
 | F2 - resetting CONNECT inactivity wait | `test_connect_absolute_capture_deadline_with_real_continuing_activity`; full real 20-second stream, timeout/listener exit and joined helpers; late completion and already-expired deadline refusal |
 | F3 - missing expected run disables binding | `test_missing_expected_run_id_cannot_disable_real_signature_binding`; before-runtime/parse invalid-type controls; valid/wrong/expired real packs and actual CLI missing/empty/malformed/wrong/valid context |
 | F4 - capacity race | `test_two_real_store_processes_cannot_admit_65_files`; two actual spawned writers at 63 files; exact 64/65 boundary, exception/crash/busy recovery, private marker/lock/link/replacement/legacy refusals and immutable admission snapshot |
+
+`scripts/tests/test_privacy_traffic_snapshot.py` covers N1 at the earlier window.
+`test_caller_thread_cannot_insert_private_field_after_checks_before_serialization`
+uses a real caller thread and line-trace scheduling, without replacing the
+production validator, serializer, schema, lock or budget. It reproduces the e669
+private-write failure before correction and checks actual private readback and
+cleanup afterward. Additional tests cover the first schema check's detached
+containers, nested field/host/run/policy/counter/journey/expiry changes, mutation
+during bounded copying, immutable byte snapshots, real signing after caller
+mutation, caller preservation, and exact byte/node/depth/type/refusal controls.
+The existing 63-to-64 two-process store test remains required and unchanged.
+This N1 correction changes no policy/report field, CLI command, runtime pin,
+native resource, capture/store limit or canonical consumer; later exact-source
+hash/review adoption still belongs to Root.
 
 Native tests exercise the same packaged metadata policy, source-only fixture
 and default-deny network boundary, in addition to all original producer tests.

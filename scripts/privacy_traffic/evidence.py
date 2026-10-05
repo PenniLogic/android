@@ -16,8 +16,8 @@ from .capture import VIOLATIONS
 from .file_lock import exclusive_file
 from .policy import JOURNEYS, LIMITS, Policy
 from .safety import (
-    MAX_DOCUMENT_BYTES, MAX_RETENTION_SECONDS, RUN_ID, SHA256, Refusal, canonical, exact_keys,
-    document, expected_run, physical, read_document, require,
+    MAX_RETENTION_SECONDS, RUN_ID, SHA256, Refusal, canonical, exact_keys,
+    document, expected_run, physical, read_document, require, snapshot_document,
 )
 
 
@@ -41,6 +41,8 @@ def validate_report(
 ) -> bytes:
     if expected_run_id is not _RunBinding.OMITTED:
         expected_run(expected_run_id)
+    raw = snapshot_document(report)
+    report = document(raw)
     exact_keys(report, REPORT_KEYS, "unscrubbed_evidence")
     require(
         report["format"] == "pennilogic_privacy_evidence_v1" and report["kind"] == "source_synthetic"
@@ -130,8 +132,6 @@ def validate_report(
         and report["observed_journeys"] == [] and report["unmet_required_journeys"] == list(JOURNEYS),
         "journey_evidence_refused",
     )
-    raw = canonical(report)
-    require(len(raw) <= MAX_DOCUMENT_BYTES, "document_size_refused")
     return raw
 
 
@@ -379,7 +379,7 @@ class EvidenceStore:
             require(match is not None, "store_foreign_entry")
             private_path(path, directory=False)
             report = read_document(path)
-            validate_report(report, policy, now=now, expected_run_id=match[1], allow_expired=True)
+            report = document(validate_report(report, policy, now=now, expected_run_id=match[1], allow_expired=True))
             if report["expires_at"] <= now:
                 candidates.append(path)
         for path in candidates:

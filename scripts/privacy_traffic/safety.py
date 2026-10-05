@@ -59,6 +59,66 @@ def canonical(value: Any) -> bytes:
         raise Refusal("invalid_document") from None
 
 
+def snapshot_document(value: Any) -> bytes:
+    """Copy only bounded built-in JSON values; never retain caller-owned containers."""
+    require(type(value) is dict, "document_object_required")
+    remaining, nodes = MAX_DOCUMENT_BYTES, 0
+
+    def reserve(size: int) -> None:
+        nonlocal remaining
+        require(size <= remaining, "document_size_refused")
+        remaining -= size
+
+    def string_size(text: str) -> int:
+        require(len(text) <= remaining, "document_size_refused")
+        return len(canonical(text))
+
+    def capture(item: Any, depth: int) -> Any:
+        nonlocal nodes
+        nodes += 1
+        require(depth <= MAX_DEPTH and nodes <= MAX_NODES, "document_complexity_refused")
+        kind = type(item)
+        if kind is dict:
+            size = len(item)
+            require(size <= MAX_NODES, "document_complexity_refused")
+            reserve(2)
+            owned_dict: dict[str, Any] = {}
+            for key, child in item.items():
+                require(type(key) is str, "snapshot_type_refused")
+                reserve(string_size(key) + 1 + bool(owned_dict))
+                owned_dict[key] = capture(child, depth + 1)
+            require(len(item) == size, "snapshot_input_changed")
+            return owned_dict
+        if kind is list:
+            size = len(item)
+            require(size <= MAX_NODES, "document_complexity_refused")
+            reserve(2)
+            owned_list: list[Any] = []
+            for index in range(size):
+                reserve(bool(index))
+                owned_list.append(capture(item[index], depth + 1))
+            require(len(item) == size, "snapshot_input_changed")
+            return owned_list
+        require(kind in (str, int, float, bool, type(None)), "snapshot_type_refused")
+        if kind is str:
+            reserve(string_size(item))
+        else:
+            if kind is float:
+                require(math.isfinite(item), "non_finite_json")
+            if kind is int:
+                require(item.bit_length() <= MAX_DOCUMENT_BYTES * 4, "document_size_refused")
+            reserve(len(canonical(item)))
+        return item
+
+    try:
+        owned = capture(value, 0)
+    except (RuntimeError, IndexError):
+        raise Refusal("snapshot_input_changed") from None
+    raw = canonical(owned)
+    require(len(raw) <= MAX_DOCUMENT_BYTES, "document_size_refused")
+    return raw
+
+
 def _pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
