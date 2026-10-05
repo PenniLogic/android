@@ -15,8 +15,11 @@ The old private repositories, unmerged branches and discussions remain in
 ```text
 python scripts/setup.py
 python scripts/check_repository.py
+python -m pip install -r scripts/privacy_traffic/requirements.txt
 python scripts/quality_gates.py ci
 python scripts/quality_gates.py self-test
+python scripts/privacy_traffic_harness.py self-test
+python scripts/check_privacy_components.py
 python -m unittest discover -s scripts/tests -p "test_*.py"
 ```
 

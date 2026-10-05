@@ -368,6 +368,28 @@ carries no device identifier, transaction, amount, message or account content.
 
 ## Observability
 
+### Scaffold-first privacy inspection (android#16 / T-QA-09)
+
+The actual startup and capture-health emitters now validate against the single packaged
+`app/src/main/res/raw/privacy_traffic_policy.json` through `PrivacyEventLogger`. Refused
+events produce only a declared error code, never the original payload. That same policy is
+consumed by the bounded synthetic TLS inspection harness, and native tests bind the packaged
+bytes and real event producers to it. No production permission, destination, trust setting,
+network journey or analytics feature is added.
+
+The source command on Windows is `python scripts\privacy_traffic_harness.py self-test`, using the isolated
+runtime pinned in `scripts/privacy_traffic/requirements.txt`. `run-rc` fails explicitly while
+real journey, analytics, runner, signed-pack/provenance and publication providers are absent.
+Synthetic routes are never claimed as product journey coverage. See
+[`docs/privacy/traffic-inspection.md`](docs/privacy/traffic-inspection.md) for the exact commands,
+bounded capture/storage/signature primitives, original eight-criterion/five-DoD mapping and
+the still-unmet canonical runner, native CI and RC acceptance requirements.
+Retained host names require exact source-policy membership, not only DNS syntax;
+withheld names keep a violation/count. Capture uses one absolute 20-second
+deadline, evidence admission is interprocess-serialized at 64 files, and signature
+verification requires a valid out-of-band run context. The original f39 source
+review remains FAIL pending a separate exact-head review of these corrections.
+
 - Process start logs one structured `Log.i` event with tag `PenniLogic`:
   `{"event":"app_start","build_type":…,"version_name":…,"version_code":…,"configuration":"loaded"|"invalid","problems":[…]}`.
   It contains build metadata and problem identifiers only; no configuration values, no user data.

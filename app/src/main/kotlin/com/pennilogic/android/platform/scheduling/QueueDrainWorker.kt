@@ -2,11 +2,10 @@ package com.pennilogic.android.platform.scheduling
 
 import android.content.Context
 import android.os.Build
-import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.ListenableWorker
 import androidx.work.WorkerParameters
-import com.pennilogic.android.observability.LOG_TAG
+import com.pennilogic.android.observability.PrivacyEventLogger
 import com.pennilogic.android.platform.capture.AndroidPlatformSignals
 import com.pennilogic.android.platform.capture.CaptureHealthEvent
 import com.pennilogic.android.platform.capture.PlatformSignals
@@ -75,8 +74,8 @@ abstract class QueueDrainWorker(
         val outcome = drainer.drain { platformStop() }
         val (bucket, raw) = signals.standbyBucket()
         val stopReason = (outcome as? DrainOutcome.Stopped)?.reason
-        Log.i(
-            LOG_TAG,
+        PrivacyEventLogger.log(
+            applicationContext.resources,
             CaptureHealthEvent(
                 apiLevel = signals.apiLevel,
                 captureHealth = null,

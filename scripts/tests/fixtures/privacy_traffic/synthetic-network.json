@@ -1,0 +1,20 @@
+{
+  "component": "pennilogic.synthetic:traffic-probe:1",
+  "diagnostic_hosts": ["unlisted.synthetic.invalid"],
+  "destinations": [
+    {"host": "analytics.synthetic.invalid", "component": "pennilogic.synthetic:traffic-probe:1", "path": "/probe/ingestion", "schema": "synthetic_probe", "journey": "ingestion", "synthetic": true},
+    {"host": "analytics.synthetic.invalid", "component": "pennilogic.synthetic:traffic-probe:1", "path": "/probe/clarification", "schema": "synthetic_probe", "journey": "clarification", "synthetic": true},
+    {"host": "analytics.synthetic.invalid", "component": "pennilogic.synthetic:traffic-probe:1", "path": "/probe/analytics", "schema": "synthetic_probe", "journey": "analytics", "synthetic": true}
+  ],
+  "network_schemas": {
+    "synthetic_probe": {
+      "category": "analytics",
+      "fields": {
+        "event": {"kind": "enum", "values": ["synthetic_probe"], "nullable": false},
+        "stage": {"kind": "enum", "values": ["ingestion", "clarification", "analytics"], "nullable": false},
+        "outcome": {"kind": "enum", "values": ["ok"], "nullable": false},
+        "synthetic": {"kind": "boolean", "nullable": false}
+      }
+    }
+  }
+}

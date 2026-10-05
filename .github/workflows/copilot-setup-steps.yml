@@ -48,6 +48,10 @@
           "run": "python scripts/check_repository.py"
         },
         {
+          "name": "Install dependencies",
+          "run": "python -m pip install -r scripts/privacy_traffic/requirements.txt"
+        },
+        {
           "name": "Install managed hook",
           "run": "python scripts/setup.py"
         }
