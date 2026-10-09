@@ -648,7 +648,8 @@ def run_ci_gradle(invocation: str) -> GradleRun:
     try:
         check_ci_evidence_path(fixture)
         fixture.write_text(CI_PROVENANCE_SCRIPT.replace("__SETTINGS__", settings), encoding="utf-8")
-        return run_gradle(ci_tasks(), ("--init-script", str(fixture)))
+        # The unique init-script path and invocation identity make this configuration non-reusable.
+        return run_gradle(ci_tasks(), ("--init-script", str(fixture), "--no-configuration-cache"))
     except UnsafeProcessTreeError as error:
         restoration_safe = False
         try:

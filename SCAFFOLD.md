@@ -174,6 +174,12 @@ tasks still carry `--rerun`; test and coverage share that same newly executed de
 previous invocation's results. Report-producing tasks also carry `--rerun`. Compilation and other
 native work remain cacheable, with the same `--no-daemon` and process-ownership boundary.
 
+Only `ci` disables configuration caching with `--no-configuration-cache`: its uniquely allocated
+provenance init script embeds a new invocation identity on every run, so the resulting configuration
+cannot be reused. Avoiding that disposable cache's serialization does not disable the build cache,
+remove any task or reuse test/report evidence. The standalone gates, `all` and the self-test retain
+their existing cache behavior, including the deliberate unit-test reuse controls.
+
 Before starting Gradle, Python checks physical source/input trees and their ancestors, including
 `app/src`, build configuration and the wrapper/catalogue inputs, plus all six evidence paths.
 It does not invalidate any evidence. Source or output aliases, reparse ancestors/descendants and
@@ -204,8 +210,8 @@ execution-data, lint and coverage files, emitting their SHA-256 fingerprints and
 this single captured console. Every consumed file must still match its producer's observation.
 The JaCoCo XML and execution-data session must also match this invocation, so replaying a prior
 matching pair cannot pass. This never uses file timestamps or a clock-based freshness threshold.
-The script verifies the native task-declared output contract and keeps configuration/build caching
-enabled; compilation stays cacheable and both unit-test tasks remain forced. Its temporary file
+The script verifies the native task-declared output contract and keeps build caching enabled;
+compilation stays cacheable and both unit-test tasks remain forced. Its temporary file
 is removed only after safe native return, or retained with the typed unsafe-process error.
 The pinned leading-session JaCoCo format is checked explicitly; unsupported formats, encodings or
 session layouts fail closed rather than yielding trusted counts.
