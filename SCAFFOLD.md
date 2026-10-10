@@ -59,7 +59,8 @@ Run from the repository root of a clean clone. No other setup step is required.
 | Gates with pipeline metrics | `python scripts/quality_gates.py all` |
 | CI-only grouped build, tests, lint and coverage with fresh single-invocation evidence | `python scripts/quality_gates.py ci` |
 | Gate self-test on planted defects | `python scripts/quality_gates.py self-test` |
-| Script unit tests | `python -m unittest discover -s scripts/tests -p "test_*.py"` |
+| Complete script suite with privacy evidence (CI) | `python scripts/privacy_traffic_harness.py self-test --all-scripts` |
+| Standalone script unit tests | `python -m unittest discover -s scripts/tests -p "test_*.py"` |
 | Native formatter input-scope regression only | `./gradlew formatterInputScopeRegression --init-script scripts/tests/fixtures/formatter_input_scope.init.gradle --no-configuration-cache --console=plain --no-daemon --stacktrace` |
 
 On Windows use `gradlew.bat` in place of `./gradlew`. `gradle.properties` sets
@@ -174,6 +175,12 @@ tasks still carry `--rerun`; test and coverage share that same newly executed de
 previous invocation's results. Report-producing tasks also carry `--rerun`. Compilation and other
 native work remain cacheable, with the same `--no-daemon` and process-ownership boundary.
 
+Only `ci` disables configuration caching with `--no-configuration-cache`: its uniquely allocated
+provenance init script embeds a new invocation identity on every run, so the resulting configuration
+cannot be reused. Avoiding that disposable cache's serialization does not disable the build cache,
+remove any task or reuse test/report evidence. The standalone gates, `all` and the self-test retain
+their existing cache behavior, including the deliberate unit-test reuse controls.
+
 Before starting Gradle, Python checks physical source/input trees and their ancestors, including
 `app/src`, build configuration and the wrapper/catalogue inputs, plus all six evidence paths.
 It does not invalidate any evidence. Source or output aliases, reparse ancestors/descendants and
@@ -204,8 +211,8 @@ execution-data, lint and coverage files, emitting their SHA-256 fingerprints and
 this single captured console. Every consumed file must still match its producer's observation.
 The JaCoCo XML and execution-data session must also match this invocation, so replaying a prior
 matching pair cannot pass. This never uses file timestamps or a clock-based freshness threshold.
-The script verifies the native task-declared output contract and keeps configuration/build caching
-enabled; compilation stays cacheable and both unit-test tasks remain forced. Its temporary file
+The script verifies the native task-declared output contract and keeps build caching enabled;
+compilation stays cacheable and both unit-test tasks remain forced. Its temporary file
 is removed only after safe native return, or retained with the typed unsafe-process error.
 The pinned leading-session JaCoCo format is checked explicitly; unsupported formats, encodings or
 session layouts fail closed rather than yielding trusted counts.
@@ -226,6 +233,38 @@ through the canonical Infra generator; adding this command alone does not change
 workflow or establish hosted performance acceptance. Measure the complete native PR job and
 workflow, not a warm local control or a sum of mock metrics, against the unchanged under-600-second
 criterion.
+
+### Explicit combined script self-test
+
+`python scripts/privacy_traffic_harness.py self-test --all-scripts` runs the complete
+`scripts/tests/test_*.py` discovery once, including every privacy traffic test. It retains
+the existing `source_self_test` summary with fresh capture and boundary observations,
+failure/error counts, explicit skips and no release qualification. Its `tests` count
+covers the entire selected script suite; unittest also reports the actual elapsed time.
+Failure or error in either the privacy or other script tests fails the command. Empty
+discovery cannot pass, and otherwise-passing script tests cannot hide a missing privacy
+suite or privacy class setup that skips every test before execution: those cases exit 1
+with `refused: privacy_self_tests_missing`.
+
+Before discovery, combined mode selects the same warning policy as the replaced
+`python -m unittest` command: `default` only when no explicit Python warning options
+exist. `PYTHONWARNINGS` and `-W` choices, including `ignore` or `error` and their normal
+precedence, remain in force. Warning-sensitive negatives therefore keep ordinary
+unittest behavior rather than silently passing under Python's default ignore filters.
+
+The focused `self-test` command without the option still selects `test_privacy_traffic*.py`;
+its warning policy is unchanged, and ordinary unittest discovery remains usable separately.
+The combined mode changes no test assertion, real timeout, fixture ownership or native Gradle
+task. The generated caller is adopted from
+[PenniLogic/infra@91d7c374](https://github.com/PenniLogic/infra/commit/91d7c3741a07f04e17d536e34d1145e1ba01c0c2)
+through `python governance/generate.py --repository android --root <android-checkout>`.
+It replaces the two overlapping script-suite invocations with this combined command once;
+the separate fresh component inventory runs immediately afterward. The repository check,
+pinned runtime restoration, grouped native gate and native negative self-test remain unchanged,
+giving six ordered commands with no duplicate discovery. Regenerate only from the accepted
+canonical source, and use the same command with `--check` to verify all generated outputs.
+This adoption is source wiring, not a hosted execution or proof of the strict under-600-second
+job and complete-workflow budget.
 
 ## Build configuration keys
 

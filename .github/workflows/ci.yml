@@ -59,7 +59,7 @@
         },
         {
           "name": "Run checks",
-          "run": "python scripts/check_repository.py\npython -m pip install -r scripts/privacy_traffic/requirements.txt\npython scripts/quality_gates.py ci\npython scripts/quality_gates.py self-test\npython scripts/privacy_traffic_harness.py self-test\npython scripts/check_privacy_components.py\npython -m unittest discover -s scripts/tests -p \"test_*.py\""
+          "run": "python scripts/check_repository.py\npython -m pip install -r scripts/privacy_traffic/requirements.txt\npython scripts/quality_gates.py ci\npython scripts/quality_gates.py self-test\npython scripts/privacy_traffic_harness.py self-test --all-scripts\npython scripts/check_privacy_components.py"
         }
       ]
     }

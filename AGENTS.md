@@ -35,9 +35,8 @@ python scripts/check_repository.py
 python -m pip install -r scripts/privacy_traffic/requirements.txt
 python scripts/quality_gates.py ci
 python scripts/quality_gates.py self-test
-python scripts/privacy_traffic_harness.py self-test
+python scripts/privacy_traffic_harness.py self-test --all-scripts
 python scripts/check_privacy_components.py
-python -m unittest discover -s scripts/tests -p "test_*.py"
 ```
 
 Repository-specific setup, commands and troubleshooting are maintained by hand in

@@ -876,6 +876,22 @@ class QualityGatesTest(unittest.TestCase):
         self.assertNotIn("--no-build-cache", arguments)
         self.assertEqual(1, arguments.count("--no-daemon"))
 
+    def test_ci_disables_only_its_nonreusable_configuration_cache(self) -> None:
+        expected = gradle_run(0, "native invocation\n")
+        with mock.patch.object(quality_gates, "run_gradle", return_value=expected) as run:
+            self.assertEqual(expected, quality_gates.run_ci_gradle(CI_TEST_INVOCATION))
+
+        self.assert_ci_native_call(run)
+        tasks, extra = run.call_args.args
+        self.assertEqual(("--init-script", extra[1], "--no-configuration-cache"), extra)
+        arguments = quality_gates.gradle_arguments(tasks, extra)
+        self.assertEqual(1, arguments.count("--no-configuration-cache"))
+        self.assertNotIn("--no-build-cache", arguments)
+        self.assertNotIn("--rerun-tasks", arguments)
+        for gate, standalone_tasks in quality_gates.GATES.items():
+            with self.subTest(gate=gate):
+                self.assertNotIn("--no-configuration-cache", quality_gates.gradle_arguments(standalone_tasks))
+
     def test_ci_retains_real_cached_non_test_task_labels_without_claiming_execution(self) -> None:
         console = self.ci_console().replace(
             "> Task :app:assembleDebug\n", "> Task :app:assembleDebug UP-TO-DATE\n",

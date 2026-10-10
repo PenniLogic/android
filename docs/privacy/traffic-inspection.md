@@ -42,9 +42,11 @@ Owned source surfaces:
 | `scripts/privacy_traffic_harness.py` | Source commands and explicit RC refusal |
 | `scripts/tests/test_privacy_traffic.py`, `scripts/tests/fixtures/privacy_traffic/synthetic-network.json` | Synthetic process/socket controls and one shared native/Python test fixture |
 
-Generated workflows, policy, hooks, checkers and setup consumers are unchanged.
-Canonical command adoption and the proxy-enabled runner are Infra-owned and must
-be wired serially by the coordinator, not by another Android writer.
+Generated workflow commands, agent policy and command documentation are adopted
+from the accepted canonical Infra generator; they are never hand-edited. Hooks,
+checkers, setup and the fresh native component extractor retain their existing
+bytes. This source adoption does not supply the separate proxy-enabled RC runner
+or change its coordinator-owned integration boundary.
 
 ## Local commands and runtime
 
@@ -89,6 +91,17 @@ identities, change global Python packages or weaken the fixture. On a clean
 hosted Linux runner, restoring the pinned requirements into the job's selected
 Python runtime needs no Windows redirector workaround.
 
+For one complete script-suite pass with the same privacy evidence summary, use
+`python scripts/privacy_traffic_harness.py self-test --all-scripts` in that runtime.
+It selects every `test_*.py`, including the focused privacy tests, once. Failures
+from either subset remain failures; the summary's test count covers the full
+suite and retains actual skips, capture runs and boundary observations. The
+combined mode also preserves ordinary unittest's warning policy: `default` when
+no explicit Python warning options exist, otherwise the caller's `PYTHONWARNINGS`
+and `-W` selection, without overriding explicit `ignore` or `error`. The focused
+command without the option keeps its existing warning behavior. Do not run the combined mode
+and then repeat focused privacy or full unittest discovery as a CI optimization.
+
 Native inventory and source assertion:
 
 ```powershell
@@ -101,8 +114,11 @@ python scripts\privacy_traffic_harness.py check-components build\privacy-compone
 Run the scaffold's existing build, test, lint, coverage, self-test and script
 suite, using the isolated Python runtime for the latter. No hosted CI rerun,
 emulator claim or release qualification follows from local results. The generated
-CI does not yet restore this task runtime or adopt the privacy command; that
-canonical change is a real integration prerequisite, not an optional gate.
+CI restores this runtime, runs `self-test --all-scripts` once, then runs the separate
+fresh native component inventory assertion. No focused or full-discovery duplicate
+is retained. The accepted source binding and generation command are recorded in
+[SCAFFOLD.md](../../SCAFFOLD.md#explicit-combined-script-self-test); a new composed
+native run must still establish the unchanged job and full-workflow budgets.
 
 ## Capture and refusal boundary
 
@@ -255,7 +271,7 @@ Canonical inputs/outputs that remain owner-controlled:
 
 | Owner | Required input/adoption | Output |
 | --- | --- | --- |
-| Infra canonical source owner | Restore pinned Python task runtime; retain existing native commands; require `self-test` and fresh component inventory assertion | Native `CI` evidence, unchanged job and full-workflow strict under-600-second contracts |
+| Infra canonical source owner | Restore pinned Python task runtime; retain existing native commands; require one `self-test --all-scripts` followed by fresh component inventory assertion | Source wiring adopted; current native `CI` evidence and unchanged job/full-workflow strict under-600-second acceptance remain required |
 | Infra proxy-runner owner | Explicit isolated synthetic account/device, proxy routing, no opaque/unintercepted traffic, bounded teardown and retention | Real RC capture transport and trusted runner evidence |
 | Android journey/analytics owners | Actual ingestion, clarification and analytics adapters consuming the packaged schema; approved destinations; deny-permission usability | Real route, component, payload and journey evidence |
 | Release/Security owner | Approved signer, external trusted public key, RC APK identity and qualified protected-source attestation | Verifiable mandatory RC evidence pack, not a test signature |
@@ -331,7 +347,7 @@ below are in `scripts/tests/test_privacy_traffic.py` unless marked native.
 | --- | --- |
 | Current-head separate qualified Core reviewer attestation before merge | **UNMET**; two author reviews are not independent review or approval |
 | Every acceptance criterion demonstrated by named test or attached evidence | Named source tests above; all remaining real RC/consumer requirements stay **UNMET** |
-| Ticket tests run in CI and are required by branch protection | **UNMET**; generated CI/canonical runtime/runner adoption and actual native run not performed here |
+| Ticket tests run in CI and are required by branch protection | **UNMET**; source commands are wired through generated CI, but current composed native execution and real RC runner qualification are not established here |
 | Observability, rollout and rollback notes on the ticket before merge | Manual notes here; coordinator-owned ticket publication still **UNMET** |
 | Declared dependencies mirrored as native GitHub blockedBy edges | Read-only task-start verification found [#1](https://github.com/PenniLogic/android/issues/1), [PenniLogic/infra#24](https://github.com/PenniLogic/infra/issues/24) and [PenniLogic/infra#3](https://github.com/PenniLogic/infra/issues/3) present and closed; no graph change made, and that is not RC acceptance |
 

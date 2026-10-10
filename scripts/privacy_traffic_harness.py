@@ -21,11 +21,24 @@ def run_id_argument(value: str) -> str:
         raise argparse.ArgumentTypeError("expected_run_id_required") from None
 
 
+class ScriptTestResult(unittest.TextTestResult):
+    privacy_tests_run = 0
+
+    def startTest(self, test: unittest.TestCase) -> None:
+        super().startTest(test)
+        if test.id().split(".", 1)[0].startswith("test_privacy_traffic"):
+            self.privacy_tests_run += 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("run-rc")
-    commands.add_parser("self-test")
+    self_test = commands.add_parser("self-test")
+    self_test.add_argument(
+        "--all-scripts", action="store_true",
+        help="Run the complete script suite once, retaining the privacy evidence summary.",
+    )
     probe = commands.add_parser("source-probe")
     probe.add_argument("scenario", default="clean", nargs="?")
     probe.add_argument("--store", type=Path)
@@ -39,11 +52,19 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "self-test":
-            suite = unittest.defaultTestLoader.discover(str(ROOT / "scripts" / "tests"), pattern="test_privacy_traffic*.py")
-            result = unittest.TextTestRunner(verbosity=2).run(suite)
+            pattern = "test_*.py" if args.all_scripts else "test_privacy_traffic*.py"
+            warning_policy = "default" if args.all_scripts and not sys.warnoptions else None
+            suite = unittest.defaultTestLoader.discover(str(ROOT / "scripts" / "tests"), pattern=pattern)
+            result = unittest.TextTestRunner(
+                verbosity=2, resultclass=ScriptTestResult if args.all_scripts else unittest.TextTestResult,
+                warnings=warning_policy,
+            ).run(suite)
+            privacy_present = not args.all_scripts or (
+                isinstance(result, ScriptTestResult) and result.privacy_tests_run > 0
+            )
             module = sys.modules.get("test_privacy_traffic")
             boundaries = sys.modules.get("test_privacy_traffic_boundaries")
-            print(canonical({
+            summary = {
                 "scope": "source_self_test",
                 "tests": result.testsRun,
                 "failures": len(result.failures),
@@ -53,8 +74,11 @@ def main(argv: list[str] | None = None) -> int:
                 "boundary_observations": getattr(boundaries, "BOUNDARY_OBSERVATIONS", []),
                 "release_qualified": False,
                 "approved_release_signer_present": False,
-            }).decode("ascii"))
-            return 0 if result.wasSuccessful() and result.testsRun > 0 else 1
+            }
+            if not privacy_present:
+                summary["refused"] = "privacy_self_tests_missing"
+            print(canonical(summary).decode("ascii"))
+            return 0 if privacy_present and result.wasSuccessful() and result.testsRun > 0 else 1
         policy = Policy.load()
         if args.command == "run-rc":
             print(canonical(release_refusal(policy)).decode("ascii"))
