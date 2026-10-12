@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pennilogic.invalid/android-compatibility/v1",
+  "title": "Android compatibility definitions v1",
+  "description": "Definitions, not execution evidence. The Python validator also binds each lane to the accepted strategy/platform requirements and checks quarantine dates and risks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "matrix_version", "strategy", "scaffold", "lanes", "quarantines"],
+  "properties": {
+    "schema_version": {"type": "integer", "const": 1},
+    "matrix_version": {"const": "1.0.0"},
+    "strategy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "commit", "oldest_api", "current_api"],
+      "properties": {
+        "version": {"const": "1.1.1"},
+        "commit": {"const": "1722fc79ab2abee15d3adc2ed2f3baaad4bd6ed4"},
+        "oldest_api": {"type": "integer", "const": 31},
+        "current_api": {"type": "integer", "const": 36}
+      }
+    },
+    "scaffold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["min_api", "minimum_is_provisional"],
+      "properties": {
+        "min_api": {"type": "integer", "const": 26},
+        "minimum_is_provisional": {"const": true}
+      }
+    },
+    "lanes": {"type": "array", "minItems": 10, "maxItems": 10, "uniqueItems": true, "items": {"$ref": "#/$defs/lane"}},
+    "quarantines": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/quarantine"}}
+  },
+  "$defs": {
+    "subset": {
+      "enum": ["parser_corpus", "permission_journeys", "restricted_settings", "large_text", "talkback", "background_capture_recovery", "cold_start", "timeline_10000", "offline_queue", "physical_sms_smoke"]
+    },
+    "lane_id": {
+      "enum": ["emulator_api_31", "emulator_api_33", "emulator_api_35", "emulator_current", "emulator_large_text", "emulator_talkback", "managed_low_memory", "managed_oem_variant_a", "managed_oem_variant_b", "physical_mid_range_indian_sim"]
+    },
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "os_api", "memory_class", "ram_mib", "oem_variant", "configuration", "test_subsets", "required_for", "result"],
+      "properties": {
+        "id": {"enum": ["emulator_api_31", "emulator_api_33", "emulator_api_35", "emulator_current", "emulator_large_text", "emulator_talkback", "managed_low_memory", "managed_oem_variant_a", "managed_oem_variant_b", "physical_mid_range_indian_sim"]},
+        "kind": {"enum": ["emulator", "managed_device", "physical"]},
+        "os_api": {"type": ["integer", "null"], "enum": [31, 33, 35, 36, null]},
+        "memory_class": {"enum": ["default_emulator", "minimum_supported_low_memory", "oem_managed", "mid_range"]},
+        "ram_mib": {"type": "null"},
+        "oem_variant": {"enum": ["reference_emulator", null]},
+        "configuration": {"enum": ["default", "largest_text_display_reduced_motion", "talkback_enabled", "profile_selection_pending", "aggressive_background_restrictions", "indian_sim_synthetic_account_wipe_required"]},
+        "test_subsets": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/subset"}},
+        "required_for": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["pull_request", "release_candidate"]}},
+        "result": {"const": "not_run"}
+      }
+    },
+    "quarantine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lane_id", "test_subset", "owner_issue", "opened_on", "expires_on"],
+      "properties": {
+        "lane_id": {"$ref": "#/$defs/lane_id"},
+        "test_subset": {"enum": ["large_text", "talkback", "cold_start", "timeline_10000"]},
+        "owner_issue": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+        "opened_on": {"type": "string", "format": "date"},
+        "expires_on": {"type": "string", "format": "date"}
+      }
+    }
+  }
+}

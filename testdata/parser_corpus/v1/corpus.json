@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "corpus_version": "1.0.0",
+  "provenance": {
+    "origin": "fresh_synthetic",
+    "builder": "closed_catalog_v1",
+    "review": "required_before_publication"
+  },
+  "rules": [
+    {"issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "1.0.0", "lifecycle": "superseded"},
+    {"issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "2.0.0", "lifecycle": "active"},
+    {"issuer_pattern": "synthetic_bank_alpha", "rule_id": "cash_withdrawal", "rule_version": "1.0.0", "lifecycle": "active"},
+    {"issuer_pattern": "synthetic_bank_alpha", "rule_id": "reversal", "rule_version": "1.0.0", "lifecycle": "active"},
+    {"issuer_pattern": "synthetic_wallet_beta", "rule_id": "wallet_movement", "rule_version": "1.0.0", "lifecycle": "active"}
+  ],
+  "cases": [
+    {
+      "id": "syn_0001", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "1.0.0", "polarity": "positive",
+      "input": {"format": "bank_debit_v1", "channel": "sms", "amount": "small", "identity": "alpha"},
+      "expected": {"classification": "transaction", "direction": "debit", "amount_minor": 12345, "currency": "INR", "reason": "parsed"}
+    },
+    {
+      "id": "syn_0002", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "1.0.0", "polarity": "positive",
+      "input": {"format": "bank_credit_v1", "channel": "notification", "amount": "fractional", "identity": "beta"},
+      "expected": {"classification": "transaction", "direction": "credit", "amount_minor": 507, "currency": "INR", "reason": "parsed"}
+    },
+    {
+      "id": "syn_0003", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "1.0.0", "polarity": "negative",
+      "input": {"format": "bank_promotion", "channel": "sms", "amount": "round", "identity": "alpha"},
+      "expected": {"classification": "non_transactional", "direction": null, "amount_minor": null, "currency": null, "reason": "promotion"}
+    },
+    {
+      "id": "syn_0004", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "1.0.0", "polarity": "negative",
+      "input": {"format": "bank_balance", "channel": "sms", "amount": "small", "identity": "alpha"},
+      "expected": {"classification": "non_transactional", "direction": null, "amount_minor": null, "currency": null, "reason": "balance_enquiry"}
+    },
+    {
+      "id": "syn_0005", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "2.0.0", "polarity": "positive",
+      "input": {"format": "bank_debit_v2", "channel": "sms", "amount": "grouped", "identity": "beta"},
+      "expected": {"classification": "transaction", "direction": "debit", "amount_minor": 12345678, "currency": "INR", "reason": "parsed"}
+    },
+    {
+      "id": "syn_0006", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "2.0.0", "polarity": "positive",
+      "input": {"format": "bank_credit_v2", "channel": "notification", "amount": "round", "identity": "alpha"},
+      "expected": {"classification": "transaction", "direction": "credit", "amount_minor": 9900, "currency": "INR", "reason": "parsed"}
+    },
+    {
+      "id": "syn_0007", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "2.0.0", "polarity": "negative",
+      "input": {"format": "bank_otp", "channel": "sms", "amount": "small", "identity": "beta"},
+      "expected": {"classification": "non_transactional", "direction": null, "amount_minor": null, "currency": null, "reason": "otp"}
+    },
+    {
+      "id": "syn_0008", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "2.0.0", "polarity": "negative",
+      "input": {"format": "bank_malformed", "channel": "sms", "amount": "small", "identity": "alpha"},
+      "expected": {"classification": "unmatched", "direction": null, "amount_minor": null, "currency": null, "reason": "malformed_amount"}
+    },
+    {
+      "id": "syn_0009", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "2.0.0", "polarity": "negative",
+      "input": {"format": "bank_missing_amount", "channel": "sms", "amount": "small", "identity": "alpha"},
+      "expected": {"classification": "unmatched", "direction": null, "amount_minor": null, "currency": null, "reason": "missing_amount"}
+    },
+    {
+      "id": "syn_0010", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "account_movement", "rule_version": "2.0.0", "polarity": "negative",
+      "input": {"format": "bank_failed", "channel": "notification", "amount": "small", "identity": "beta"},
+      "expected": {"classification": "non_transactional", "direction": null, "amount_minor": null, "currency": null, "reason": "failed_transaction"}
+    },
+    {
+      "id": "syn_0011", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "cash_withdrawal", "rule_version": "1.0.0", "polarity": "positive",
+      "input": {"format": "bank_atm", "channel": "sms", "amount": "round", "identity": "alpha"},
+      "expected": {"classification": "transaction", "direction": "debit", "amount_minor": 9900, "currency": "INR", "reason": "parsed"}
+    },
+    {
+      "id": "syn_0012", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "cash_withdrawal", "rule_version": "1.0.0", "polarity": "negative",
+      "input": {"format": "bank_failed", "channel": "sms", "amount": "round", "identity": "alpha"},
+      "expected": {"classification": "non_transactional", "direction": null, "amount_minor": null, "currency": null, "reason": "failed_transaction"}
+    },
+    {
+      "id": "syn_0013", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "reversal", "rule_version": "1.0.0", "polarity": "positive",
+      "input": {"format": "bank_reversal", "channel": "notification", "amount": "fractional", "identity": "beta"},
+      "expected": {"classification": "transaction", "direction": "credit", "amount_minor": 507, "currency": "INR", "reason": "parsed"}
+    },
+    {
+      "id": "syn_0014", "issuer_pattern": "synthetic_bank_alpha", "rule_id": "reversal", "rule_version": "1.0.0", "polarity": "negative",
+      "input": {"format": "bank_promotion", "channel": "sms", "amount": "fractional", "identity": "beta"},
+      "expected": {"classification": "non_transactional", "direction": null, "amount_minor": null, "currency": null, "reason": "promotion"}
+    },
+    {
+      "id": "syn_0015", "issuer_pattern": "synthetic_wallet_beta", "rule_id": "wallet_movement", "rule_version": "1.0.0", "polarity": "positive",
+      "input": {"format": "wallet_debit", "channel": "notification", "amount": "small", "identity": "alpha"},
+      "expected": {"classification": "transaction", "direction": "debit", "amount_minor": 12345, "currency": "INR", "reason": "parsed"}
+    },
+    {
+      "id": "syn_0016", "issuer_pattern": "synthetic_wallet_beta", "rule_id": "wallet_movement", "rule_version": "1.0.0", "polarity": "positive",
+      "input": {"format": "wallet_credit", "channel": "sms", "amount": "fractional", "identity": "beta"},
+      "expected": {"classification": "transaction", "direction": "credit", "amount_minor": 507, "currency": "INR", "reason": "parsed"}
+    },
+    {
+      "id": "syn_0017", "issuer_pattern": "synthetic_wallet_beta", "rule_id": "wallet_movement", "rule_version": "1.0.0", "polarity": "negative",
+      "input": {"format": "wallet_failed", "channel": "notification", "amount": "round", "identity": "alpha"},
+      "expected": {"classification": "non_transactional", "direction": null, "amount_minor": null, "currency": null, "reason": "failed_transaction"}
+    },
+    {
+      "id": "syn_0018", "issuer_pattern": "synthetic_wallet_beta", "rule_id": "wallet_movement", "rule_version": "1.0.0", "polarity": "negative",
+      "input": {"format": "wallet_promotion", "channel": "notification", "amount": "small", "identity": "beta"},
+      "expected": {"classification": "non_transactional", "direction": null, "amount_minor": null, "currency": null, "reason": "promotion"}
+    },
+    {
+      "id": "syn_0019", "issuer_pattern": "synthetic_wallet_beta", "rule_id": "wallet_movement", "rule_version": "1.0.0", "polarity": "negative",
+      "input": {"format": "wallet_untrusted", "channel": "sms", "amount": "small", "identity": "alpha"},
+      "expected": {"classification": "unmatched", "direction": null, "amount_minor": null, "currency": null, "reason": "untrusted_sender"}
+    }
+  ]
+}

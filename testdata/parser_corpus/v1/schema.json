@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pennilogic.invalid/parser-corpus/v1",
+  "title": "Fresh synthetic parser corpus v1",
+  "description": "Structural contract. The Python validator additionally checks the closed rule inventory, issuer-format binding, amount selectors, uniqueness and positive/negative coverage. Neither validator establishes real-world provenance.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "corpus_version", "provenance", "rules", "cases"],
+  "properties": {
+    "schema_version": {"const": 1, "type": "integer"},
+    "corpus_version": {"const": "1.0.0"},
+    "provenance": {
+      "const": {"origin": "fresh_synthetic", "builder": "closed_catalog_v1", "review": "required_before_publication"}
+    },
+    "rules": {"type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": {"$ref": "#/$defs/rule"}},
+    "cases": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/case"}}
+  },
+  "$defs": {
+    "issuer": {"enum": ["synthetic_bank_alpha", "synthetic_wallet_beta"]},
+    "rule_id": {"enum": ["account_movement", "cash_withdrawal", "reversal", "wallet_movement"]},
+    "rule_version": {"enum": ["1.0.0", "2.0.0"]},
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer_pattern", "rule_id", "rule_version", "lifecycle"],
+      "properties": {
+        "issuer_pattern": {"$ref": "#/$defs/issuer"},
+        "rule_id": {"$ref": "#/$defs/rule_id"},
+        "rule_version": {"$ref": "#/$defs/rule_version"},
+        "lifecycle": {"enum": ["active", "superseded"]}
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "channel", "amount", "identity"],
+      "properties": {
+        "format": {
+          "enum": [
+            "bank_debit_v1", "bank_credit_v1", "bank_debit_v2", "bank_credit_v2", "bank_atm",
+            "bank_reversal", "bank_failed", "bank_promotion", "bank_balance", "bank_otp",
+            "bank_malformed", "bank_missing_amount", "wallet_debit", "wallet_credit",
+            "wallet_failed", "wallet_promotion", "wallet_untrusted"
+          ]
+        },
+        "channel": {"enum": ["sms", "notification"]},
+        "amount": {"enum": ["small", "fractional", "round", "grouped"]},
+        "identity": {"enum": ["alpha", "beta"]}
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "direction", "amount_minor", "currency", "reason"],
+      "properties": {
+        "classification": {"enum": ["transaction", "non_transactional", "unmatched"]},
+        "direction": {"enum": ["debit", "credit", null]},
+        "amount_minor": {"type": ["integer", "null"], "enum": [12345, 507, 9900, 12345678, null]},
+        "currency": {"enum": ["INR", null]},
+        "reason": {"enum": ["parsed", "failed_transaction", "promotion", "balance_enquiry", "otp", "malformed_amount", "missing_amount", "untrusted_sender"]}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"classification": {"const": "transaction"}}},
+          "then": {
+            "properties": {
+              "direction": {"enum": ["debit", "credit"]},
+              "amount_minor": {"type": "integer", "minimum": 1, "maximum": 9223372036854775807},
+              "currency": {"const": "INR"},
+              "reason": {"const": "parsed"}
+            }
+          },
+          "else": {
+            "properties": {
+              "direction": {"type": "null"}, "amount_minor": {"type": "null"}, "currency": {"type": "null"},
+              "reason": {"not": {"const": "parsed"}}
+            }
+          }
+        }
+      ]
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "issuer_pattern", "rule_id", "rule_version", "polarity", "input", "expected"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^syn_[0-9]{4}$"},
+        "issuer_pattern": {"$ref": "#/$defs/issuer"},
+        "rule_id": {"$ref": "#/$defs/rule_id"},
+        "rule_version": {"$ref": "#/$defs/rule_version"},
+        "polarity": {"enum": ["positive", "negative"]},
+        "input": {"$ref": "#/$defs/input"},
+        "expected": {"$ref": "#/$defs/expected"}
+      }
+    }
+  }
+}

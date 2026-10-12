@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "matrix_version": "1.0.0",
+  "strategy": {
+    "version": "1.1.1",
+    "commit": "1722fc79ab2abee15d3adc2ed2f3baaad4bd6ed4",
+    "oldest_api": 31,
+    "current_api": 36
+  },
+  "scaffold": {"min_api": 26, "minimum_is_provisional": true},
+  "lanes": [
+    {
+      "id": "emulator_api_31", "kind": "emulator", "os_api": 31,
+      "memory_class": "default_emulator", "ram_mib": null, "oem_variant": "reference_emulator",
+      "configuration": "default",
+      "test_subsets": ["parser_corpus", "permission_journeys", "restricted_settings"],
+      "required_for": ["pull_request", "release_candidate"], "result": "not_run"
+    },
+    {
+      "id": "emulator_api_33", "kind": "emulator", "os_api": 33,
+      "memory_class": "default_emulator", "ram_mib": null, "oem_variant": "reference_emulator",
+      "configuration": "default",
+      "test_subsets": ["parser_corpus", "permission_journeys", "restricted_settings"],
+      "required_for": ["release_candidate"], "result": "not_run"
+    },
+    {
+      "id": "emulator_api_35", "kind": "emulator", "os_api": 35,
+      "memory_class": "default_emulator", "ram_mib": null, "oem_variant": "reference_emulator",
+      "configuration": "default",
+      "test_subsets": ["parser_corpus", "permission_journeys", "restricted_settings"],
+      "required_for": ["release_candidate"], "result": "not_run"
+    },
+    {
+      "id": "emulator_current", "kind": "emulator", "os_api": 36,
+      "memory_class": "default_emulator", "ram_mib": null, "oem_variant": "reference_emulator",
+      "configuration": "default",
+      "test_subsets": ["parser_corpus", "permission_journeys", "restricted_settings"],
+      "required_for": ["pull_request", "release_candidate"], "result": "not_run"
+    },
+    {
+      "id": "emulator_large_text", "kind": "emulator", "os_api": 36,
+      "memory_class": "default_emulator", "ram_mib": null, "oem_variant": "reference_emulator",
+      "configuration": "largest_text_display_reduced_motion",
+      "test_subsets": ["parser_corpus", "permission_journeys", "restricted_settings", "large_text"],
+      "required_for": ["pull_request", "release_candidate"], "result": "not_run"
+    },
+    {
+      "id": "emulator_talkback", "kind": "emulator", "os_api": 36,
+      "memory_class": "default_emulator", "ram_mib": null, "oem_variant": "reference_emulator",
+      "configuration": "talkback_enabled",
+      "test_subsets": ["parser_corpus", "permission_journeys", "restricted_settings", "talkback"],
+      "required_for": ["release_candidate"], "result": "not_run"
+    },
+    {
+      "id": "managed_low_memory", "kind": "managed_device", "os_api": null,
+      "memory_class": "minimum_supported_low_memory", "ram_mib": null, "oem_variant": null,
+      "configuration": "profile_selection_pending",
+      "test_subsets": ["parser_corpus", "permission_journeys", "background_capture_recovery", "cold_start", "timeline_10000", "offline_queue"],
+      "required_for": ["release_candidate"], "result": "not_run"
+    },
+    {
+      "id": "managed_oem_variant_a", "kind": "managed_device", "os_api": null,
+      "memory_class": "oem_managed", "ram_mib": null, "oem_variant": null,
+      "configuration": "aggressive_background_restrictions",
+      "test_subsets": ["parser_corpus", "permission_journeys", "background_capture_recovery"],
+      "required_for": ["release_candidate"], "result": "not_run"
+    },
+    {
+      "id": "managed_oem_variant_b", "kind": "managed_device", "os_api": null,
+      "memory_class": "oem_managed", "ram_mib": null, "oem_variant": null,
+      "configuration": "aggressive_background_restrictions",
+      "test_subsets": ["parser_corpus", "permission_journeys", "background_capture_recovery"],
+      "required_for": ["release_candidate"], "result": "not_run"
+    },
+    {
+      "id": "physical_mid_range_indian_sim", "kind": "physical", "os_api": null,
+      "memory_class": "mid_range", "ram_mib": null, "oem_variant": null,
+      "configuration": "indian_sim_synthetic_account_wipe_required",
+      "test_subsets": ["parser_corpus", "permission_journeys", "physical_sms_smoke", "cold_start", "timeline_10000"],
+      "required_for": ["release_candidate"], "result": "not_run"
+    }
+  ],
+  "quarantines": []
+}
