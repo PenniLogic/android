@@ -103,8 +103,16 @@ was used as a seed for these fixtures.
 
 ### Parser integration seam
 
-`parser_corpus.load()` produces an immutable snapshot; `run_corpus(corpus, adapter)` calls the adapter
-once for **every case**, never passing it the golden output. The callback receives `SyntheticInput`
+`parser_corpus.load()` / `validate()` produce an immutable snapshot containing its canonical source
+bytes as well as the rendered cases and digest. Both `coverage_report()` and `run_corpus()` revalidate
+those bytes with the same source validator and compare every case's membership, order and content
+and the digest before reporting or invoking an adapter. A constructed/replaced `Corpus` with missing
+source bytes, reduced/duplicate/changed cases or a detached digest is refused, not silently repaired.
+Canonical comparison also distinguishes integer money from equal-valued floats. This is snapshot
+consistency, not proof of parser identity or source provenance; source bytes never enter the report.
+
+`run_corpus(corpus, adapter)` calls the adapter once for **every case**, never passing it the golden
+output. The callback receives `SyntheticInput`
 (issuer/rule/version, channel, reserved sender and generated text) and returns exactly
 `classification`, `direction`, `amount_minor`, `currency`, `reason`, matching the schema's expected
 shape. It returns a result or a payload-free `Refusal`; the native adapter owns translation of its
@@ -175,8 +183,12 @@ hardware serial, account, stdout/stderr, screenshot, arbitrary exception text or
 is accepted as report metadata.
 
 A quarantined noncritical cell must name a positive Android owning issue number and explicit ISO
-opening/expiry dates interpreted in UTC, lasting at most 14 days. Expired/future/duplicate/ownerless entries fail, with
-expiry checked again at execution. Security/privacy/money-sensitive subsets cannot be quarantined.
+opening/expiry dates interpreted in UTC, lasting at most 14 days. `select()`, `plan()` and
+`run_required()` convert supplied `Matrix` records back through the same bounded source validator:
+all lane requirements and quarantine eligibility, owner, uniqueness and current dates are checked
+before selection, reporting or callbacks, including entries outside the selected stage.
+Constructed records cannot bypass the JSON contract. Expired/future/duplicate/ownerless entries fail;
+security/privacy/money-sensitive subsets cannot be quarantined.
 A valid quarantine **still executes and is reported**, never satisfies a required pass, and is not
 a reviewer approval or a waiver. The broader repository-wide 2% ceiling, flake-event classification
 and deletion approval remain [PenniLogic/infra#28](https://github.com/PenniLogic/infra/issues/28)'s gate.

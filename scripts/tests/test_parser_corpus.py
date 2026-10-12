@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -62,6 +63,20 @@ class CorpusTest(unittest.TestCase):
         with self.assertRaises(Refusal) as caught:
             corpus.validate(value)
         self.assertRegex(str(caught.exception), r"^[a-z][a-z0-9_]*$")
+
+    def refuse_snapshot(self, value: corpus.Corpus) -> None:
+        for boundary in ("coverage_report", "run_corpus"):
+            with self.subTest(boundary=boundary):
+                probe = mock.Mock(wraps=fixture_probe)
+                output, error = io.StringIO(), io.StringIO()
+                with redirect_stdout(output), redirect_stderr(error), self.assertRaises(Refusal) as caught:
+                    if boundary == "coverage_report":
+                        corpus.coverage_report(value)
+                    else:
+                        corpus.run_corpus(value, probe)
+                probe.assert_not_called()
+                self.assertRegex(str(caught.exception), r"^[a-z][a-z0-9_]*$")
+                self.assertEqual("", output.getvalue() + error.getvalue())
 
     def test_complete_committed_corpus_and_coverage(self) -> None:
         result = corpus.check_repository_corpus()
@@ -124,6 +139,80 @@ class CorpusTest(unittest.TestCase):
         self.assertEqual(19, len(validated.cases))
         self.assertEqual(digest, validated.sha256)
         self.assertTrue(corpus.run_corpus(validated, fixture_probe)["all_cases_passed"])
+
+    def test_programmatic_corpus_rejects_reduced_or_duplicate_membership(self) -> None:
+        valid = corpus.validate(self.value)
+        for index, cases in enumerate((
+            (), valid.cases[:1], valid.cases[:-1], (valid.cases[0], valid.cases[0]),
+            (*valid.cases[:-1], valid.cases[0]), tuple(reversed(valid.cases)),
+        )):
+            with self.subTest(change=index):
+                self.refuse_snapshot(replace(valid, cases=cases))
+
+    def test_programmatic_corpus_rejects_unbound_or_stale_digests(self) -> None:
+        valid = corpus.validate(self.value)
+        self.value["cases"][0]["input"]["identity"] = "beta"
+        different = corpus.validate(self.value)
+        self.assertNotEqual(valid.sha256, different.sha256)
+        for index, candidate in enumerate((
+            corpus.Corpus(valid.cases, valid.sha256),
+            replace(valid, sha256="0" * 64), replace(valid, sha256=None),
+            replace(valid, sha256=different.sha256), replace(different, sha256=valid.sha256),
+            replace(valid, source_snapshot=different.source_snapshot),
+        )):
+            with self.subTest(change=index):
+                self.refuse_snapshot(candidate)
+
+    def test_programmatic_corpus_rejects_changed_case_content(self) -> None:
+        valid = corpus.validate(self.value)
+        first = valid.cases[0]
+        for index, case in enumerate((
+            replace(first, id="syn_9999"), replace(first, polarity="negative"),
+            replace(first, rule=("synthetic_bank_alpha", "account_movement", "2.0.0")),
+            replace(first, input=replace(first.input, text="SYNTHETIC: changed source input")),
+            replace(first, input=replace(first.input, sender="<SYNTH-CHANGED-SENDER>")),
+            replace(first, expected=replace(first.expected, direction="credit")),
+            replace(first, expected=replace(first.expected, amount_minor=12345.0)),
+            replace(first, rule=list(first.rule)), replace(first, input=None), replace(first, expected=None),
+        )):
+            with self.subTest(change=index):
+                self.refuse_snapshot(replace(valid, cases=(case, *valid.cases[1:])))
+
+    def test_programmatic_corpus_revalidates_the_supplied_source_snapshot(self) -> None:
+        valid = corpus.validate(self.value)
+        for index, change in enumerate((
+            lambda value: value["cases"].__setitem__(1, value["cases"][0]),
+            lambda value: value["cases"][0]["expected"].__setitem__("amount_minor", 12345.0),
+            lambda value: value["cases"][0]["input"].__setitem__("raw", "SYNTH_PLANTED_MESSAGE"),
+            lambda value: value["rules"].pop(),
+        )):
+            with self.subTest(change=index):
+                changed = copy.deepcopy(self.value)
+                change(changed)
+                self.refuse_snapshot(replace(valid, source_snapshot=canonical(changed)))
+        for raw in (b"", b"{}", b'{"raw":NaN}', bytearray(valid.source_snapshot)):
+            with self.subTest(kind=type(raw).__name__):
+                self.refuse_snapshot(replace(valid, source_snapshot=raw))
+
+    def test_complete_constructed_snapshot_roundtrips_without_rereading_files(self) -> None:
+        original = corpus.validate(self.value)
+        self.value["cases"][0]["input"]["identity"] = "beta"
+        changed = corpus.validate(self.value)
+        for valid in (original, changed):
+            supplied = corpus.Corpus(valid.cases, valid.sha256, valid.source_snapshot)
+            probe = mock.Mock(wraps=fixture_probe)
+            with mock.patch.object(corpus, "load", side_effect=AssertionError("snapshot must not reload files")):
+                coverage = corpus.coverage_report(supplied)
+                report = corpus.run_corpus(supplied, probe)
+            self.assertEqual(19, coverage["corpus_size"])
+            self.assertEqual(valid.sha256, coverage["corpus_sha256"])
+            self.assertEqual(19, probe.call_count)
+            self.assertEqual(19, report["passed"])
+            self.assertTrue(report["all_cases_passed"])
+            self.assertFalse(report["production_parser_executed"])
+            self.assertFalse(report["release_qualified"])
+            self.assertNotIn("source_snapshot", report)
+            self.assertNotIn(valid.source_snapshot.decode("ascii"), repr(supplied))
 
     def test_planted_identifiers_cannot_enter_any_free_text_slot(self) -> None:
         plants = (

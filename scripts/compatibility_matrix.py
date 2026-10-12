@@ -180,25 +180,52 @@ def load() -> Matrix:
     return matrix
 
 
-def select(matrix: Matrix, stage: str) -> tuple[Lane, ...]:
-    require(stage in STAGES, "matrix_stage_invalid")
+def _admit_matrix(matrix: Matrix, *, today: date | None = None) -> Matrix:
     require(
         type(matrix) is Matrix and type(matrix.lanes) is tuple and len(matrix.lanes) == len(LANES),
         "matrix_lane_inventory_invalid",
     )
     require(
-        all(type(lane) is Lane and type(lane.id) is str and lane.id in LANES
-            and lane == Lane(lane.id, *LANES[lane.id]) for lane in matrix.lanes)
-        and len({lane.id for lane in matrix.lanes}) == len(LANES),
-        "matrix_required_lane_drift",
+        all(type(lane) is Lane and type(lane.test_subsets) is tuple and type(lane.required_for) is tuple
+            for lane in matrix.lanes),
+        "matrix_lane_shape",
     )
+    require(
+        type(matrix.quarantines) is tuple and len(matrix.quarantines) <= 64,
+        "quarantine_inventory_invalid",
+    )
+    for item in matrix.quarantines:
+        require(type(item) is Quarantine, "quarantine_shape")
+        require(type(item.opened_on) is date and type(item.expires_on) is date, "quarantine_date_invalid")
+    return validate({
+        "schema_version": 1, "matrix_version": "1.0.0", "strategy": STRATEGY,
+        "scaffold": {"min_api": 26, "minimum_is_provisional": True},
+        "lanes": [
+            {
+                **vars(lane), "test_subsets": list(lane.test_subsets), "required_for": list(lane.required_for),
+                "ram_mib": None, "result": "not_run",
+            }
+            for lane in matrix.lanes
+        ],
+        "quarantines": [
+            {
+                **vars(item), "opened_on": item.opened_on.isoformat(), "expires_on": item.expires_on.isoformat(),
+            }
+            for item in matrix.quarantines
+        ],
+    }, today=today)
+
+
+def select(matrix: Matrix, stage: str, *, today: date | None = None) -> tuple[Lane, ...]:
+    require(stage in STAGES, "matrix_stage_invalid")
+    matrix = _admit_matrix(matrix, today=today)
     lanes = tuple(lane for lane in matrix.lanes if stage in lane.required_for)
     require(len(lanes) > 0, "required_matrix_empty")
     return lanes
 
 
-def plan(matrix: Matrix, stage: str) -> dict:
-    selected = select(matrix, stage)
+def plan(matrix: Matrix, stage: str, *, today: date | None = None) -> dict:
+    selected = select(matrix, stage, today=today)
     selected_ids = {lane.id for lane in selected}
     return {
         "scope": "compatibility_plan",
@@ -254,13 +281,7 @@ def run_required(
     binding. Refusal is the adapter's payload-free failure contract.
     """
     corpus = check_repository_corpus()
-    selected = select(matrix, stage)
-    now = today if today is not None else datetime.now(timezone.utc).date()
-    require(
-        all(item.opened_on <= now < item.expires_on and 0 < (item.expires_on - item.opened_on).days <= 14
-            for item in matrix.quarantines),
-        "quarantine_expired_or_invalid",
-    )
+    selected = select(matrix, stage, today=today)
     quarantine = {(item.lane_id, item.test_subset): item for item in matrix.quarantines}
     adapters = {} if runners is None else runners
     require(set(adapters) <= {"emulator", "managed_device", "physical"}, "runner_kind_invalid")

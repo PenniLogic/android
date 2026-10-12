@@ -8,6 +8,7 @@ import json
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
@@ -28,6 +29,21 @@ class CompatibilityMatrixTest(unittest.TestCase):
             "lane_id": "emulator_large_text", "test_subset": subset, "owner_issue": 35,
             "opened_on": self.today.isoformat(), "expires_on": (self.today + timedelta(days=offset)).isoformat(),
         }
+
+    def refuse_matrix(self, value: matrix.Matrix) -> None:
+        for stage in matrix.STAGES:
+            for boundary in ("select", "plan", "run_required"):
+                with self.subTest(stage=stage, boundary=boundary):
+                    probe = mock.Mock(return_value=matrix.AdapterResult("passed", 1))
+                    output, error = io.StringIO(), io.StringIO()
+                    with redirect_stdout(output), redirect_stderr(error), self.assertRaises(Refusal) as caught:
+                        if boundary == "run_required":
+                            matrix.run_required(value, stage, runners={"emulator": probe})
+                        else:
+                            getattr(matrix, boundary)(value, stage)
+                    probe.assert_not_called()
+                    self.assertRegex(str(caught.exception), r"^[a-z][a-z0-9_]*$")
+                    self.assertEqual("", output.getvalue() + error.getvalue())
 
     def test_strategy_and_platform_lanes_are_preserved_without_guessing_hardware(self) -> None:
         validated = matrix.load()
@@ -263,6 +279,10 @@ class CompatibilityMatrixTest(unittest.TestCase):
         self.value["quarantines"] = [self.quarantine(offset=1)]
         validated = matrix.validate(self.value)
         probe = mock.Mock(return_value=matrix.AdapterResult("passed", 1))
+        for report in (matrix.select, matrix.plan):
+            with self.subTest(boundary=report.__name__):
+                with self.assertRaisesRegex(Refusal, "^quarantine_expired_or_invalid$"):
+                    report(validated, "pull_request", today=self.today + timedelta(days=1))
         with self.assertRaisesRegex(Refusal, "^quarantine_expired_or_invalid$"):
             matrix.run_required(
                 validated, "pull_request", runners={"emulator": probe},
@@ -272,9 +292,77 @@ class CompatibilityMatrixTest(unittest.TestCase):
 
     def test_programmatic_matrix_cannot_omit_a_required_lane(self) -> None:
         valid = matrix.load()
-        for lanes in ((), valid.lanes[:1], (*valid.lanes[:-1], valid.lanes[0])):
-            with self.assertRaises(Refusal):
-                matrix.select(matrix.Matrix(lanes, ()), "pull_request")
+        for lanes in (
+            (), valid.lanes[:1], (*valid.lanes[:-1], valid.lanes[0]),
+            (replace(valid.lanes[0], os_api=31.0), *valid.lanes[1:]),
+            (replace(valid.lanes[0], test_subsets=()), *valid.lanes[1:]),
+            (replace(valid.lanes[0], required_for=("release_candidate",)), *valid.lanes[1:]),
+        ):
+            self.refuse_matrix(matrix.Matrix(lanes, ()))
+
+    def test_programmatic_quarantines_reject_critical_and_ownerless_entries(self) -> None:
+        valid = matrix.load()
+        allowed = matrix.Quarantine(
+            "emulator_large_text", "large_text", 35, self.today, self.today + timedelta(days=7),
+        )
+        for subset in matrix.NON_QUARANTINABLE:
+            lane = next(lane for lane in valid.lanes if subset in lane.test_subsets)
+            with self.subTest(subset=subset):
+                self.refuse_matrix(replace(valid, quarantines=(
+                    replace(allowed, lane_id=lane.id, test_subset=subset),
+                )))
+        for owner in (0, -1, True, 35.0, 2147483648, None, "SYNTH_PLANTED_OWNER"):
+            with self.subTest(owner_type=type(owner).__name__):
+                self.refuse_matrix(replace(valid, quarantines=(replace(allowed, owner_issue=owner),)))
+        self.refuse_matrix(matrix.Matrix(valid.lanes, (
+            replace(allowed, lane_id="emulator_api_31", test_subset="parser_corpus", owner_issue=0),
+        )))
+
+    def test_programmatic_quarantines_reject_duplicates_targets_dates_and_shapes(self) -> None:
+        valid = matrix.load()
+        allowed = matrix.Quarantine(
+            "emulator_large_text", "large_text", 35, self.today, self.today + timedelta(days=7),
+        )
+        for index, entries in enumerate((
+            (allowed, allowed), (replace(allowed, lane_id="SYNTH_PLANTED_LANE"),),
+            (replace(allowed, lane_id="emulator_api_31"),),
+            (replace(allowed, test_subset="SYNTH_PLANTED_SUBSET"),),
+            (replace(allowed, opened_on=self.today + timedelta(days=1)),),
+            (replace(allowed, expires_on=self.today),),
+            (replace(allowed, expires_on=self.today + timedelta(days=15)),),
+            (replace(allowed, opened_on=self.today.isoformat()),),
+            (replace(allowed, expires_on=None),), (self.quarantine(),), [allowed], (allowed,) * 65,
+        )):
+            with self.subTest(change=index):
+                self.refuse_matrix(replace(valid, quarantines=entries))
+        self.refuse_matrix(replace(valid, quarantines=(
+            matrix.Quarantine("emulator_talkback", "parser_corpus", 35, self.today, self.today + timedelta(days=1)),
+        )))
+
+    def test_valid_constructed_quarantine_matches_json_and_keeps_required_denominators(self) -> None:
+        self.value["quarantines"] = [self.quarantine()]
+        validated = matrix.validate(self.value)
+        constructed = matrix.Matrix(
+            validated.lanes,
+            (matrix.Quarantine("emulator_large_text", "large_text", 35, self.today, self.today + timedelta(days=7)),),
+        )
+        for stage, required, passed in (("pull_request", 10, 10), ("release_candidate", 37, 20)):
+            with self.subTest(stage=stage):
+                self.assertEqual(matrix.plan(validated, stage), matrix.plan(constructed, stage))
+                probe = mock.Mock(return_value=matrix.AdapterResult("passed", 1))
+                report = matrix.run_required(constructed, stage, runners={"emulator": probe})
+                self.assertEqual(required, report["required"])
+                self.assertEqual(required, len(report["results"]))
+                self.assertEqual(passed, probe.call_count)
+                self.assertEqual(passed, report["passed"])
+                self.assertEqual(required - passed, report["blocked"])
+                self.assertEqual(1, report["quarantined"])
+                for dimension in ("by_os", "by_memory_class", "by_oem_variant"):
+                    self.assertEqual(required, sum(group["required"] for group in report[dimension]))
+                    self.assertEqual(passed - 1, sum(group["passed"] for group in report[dimension]))
+                self.assertFalse(report["all_adapter_checks_passed"])
+                self.assertFalse(report["required_runtime_subset_passed"])
+                self.assertFalse(report["release_qualified"])
 
     def test_schema_matches_matrix_record_keys_and_selection_catalogs(self) -> None:
         schema = read_document(matrix.SCHEMA_PATH)

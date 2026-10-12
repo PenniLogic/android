@@ -118,6 +118,7 @@ class Case:
 class Corpus:
     cases: tuple[Case, ...]
     sha256: str
+    source_snapshot: bytes = field(default=b"", repr=False)
 
 
 def parse_result(value: object, *, golden: bool = False) -> ParseResult:
@@ -220,7 +221,8 @@ def validate(value: object) -> Corpus:
         all(coverage[(rule, polarity)] > 0 for rule in RULES for polarity in ("positive", "negative")),
         "rule_positive_or_negative_missing",
     )
-    return Corpus(tuple(cases), hashlib.sha256(canonical(owned)).hexdigest())
+    source_snapshot = canonical(owned)
+    return Corpus(tuple(cases), hashlib.sha256(source_snapshot).hexdigest(), source_snapshot)
 
 
 def read_snapshot(value: object) -> dict:
@@ -248,7 +250,39 @@ def check_repository_corpus() -> Corpus:
     return load(version / "corpus.json")
 
 
+def _case_snapshot(case: Case) -> bytes:
+    require(
+        type(case) is Case and type(case.rule) is tuple and len(case.rule) == 3
+        and type(case.input) is SyntheticInput and type(case.expected) is ParseResult,
+        "corpus_case_invalid",
+    )
+    return snapshot_document({
+        **vars(case), "rule": list(case.rule),
+        "input": vars(case.input), "expected": vars(case.expected),
+    })
+
+
+def _admit_corpus(corpus: Corpus) -> Corpus:
+    require(
+        type(corpus) is Corpus and type(corpus.cases) is tuple and type(corpus.sha256) is str,
+        "corpus_snapshot_invalid",
+    )
+    validated = validate(document(corpus.source_snapshot))
+    require(
+        corpus.sha256 == validated.sha256 and len(corpus.cases) == len(validated.cases),
+        "corpus_snapshot_mismatch",
+    )
+    # Canonical snapshots distinguish integer money from equal-valued floats.
+    require(
+        all(_case_snapshot(actual) == _case_snapshot(expected)
+            for actual, expected in zip(corpus.cases, validated.cases)),
+        "corpus_snapshot_mismatch",
+    )
+    return validated
+
+
 def coverage_report(corpus: Corpus) -> dict:
+    corpus = _admit_corpus(corpus)
     counts = Counter((case.rule, case.polarity) for case in corpus.cases)
     return {
         "scope": "synthetic_corpus_structure",
@@ -281,6 +315,7 @@ def run_corpus(corpus: Corpus, adapter: ParserAdapter | None = None) -> dict:
     translate its own runtime errors to Refusal without carrying payload text.
     This seam does not attest that an adapter is the accepted production parser.
     """
+    corpus = _admit_corpus(corpus)
     require(adapter is None or callable(adapter), "parser_adapter_invalid")
     outcomes = []
     for case in corpus.cases:
